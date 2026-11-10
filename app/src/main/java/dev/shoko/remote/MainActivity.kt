@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -53,6 +54,7 @@ private fun ShokoApp(model: MainViewModel) {
     val pageError by model.aniDb.pageError.collectAsStateWithLifecycle()
     val browserDialog by model.aniDb.jsDialog.collectAsStateWithLifecycle()
     var settings by remember { mutableStateOf(false) }
+    var about by rememberSaveable { mutableStateOf(false) }
     val page = state.workspace.page
     val tabs = listOf(Triple("files", "Files", Icons.AutoMirrored.Filled.List), Triple("dump", "AVDump", Icons.Default.CloudUpload),
         Triple("add", "AniDB", Icons.Default.PlaylistAdd), Triple("history", "Activity", Icons.Default.History))
@@ -65,7 +67,10 @@ private fun ShokoApp(model: MainViewModel) {
             } }, navigationIcon = { if (page == "official") IconButton(onClick = { model.readOfficialPage() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to editor") } },
                 actions = {
                     if (page == "official") TextButton(onClick = { model.readOfficialPage() }) { Text("Use app editor") }
-                    else IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Connection settings") }
+                    else {
+                        IconButton(onClick = { about = true }) { Icon(Icons.Default.Info, "About Shoko Remote") }
+                        IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Connection settings") }
+                    }
                 })
         },
         bottomBar = {
@@ -104,6 +109,14 @@ private fun ShokoApp(model: MainViewModel) {
     } }, confirmButton = { TextButton(onClick = { settings = false }) { Text("Done") } }, dismissButton = {
         if (state.connected) TextButton(onClick = { settings = false; model.logout() }) { Text("Disconnect") }
     })
+    if (about) AlertDialog(onDismissRequest = { about = false }, title = { Text("About Shoko Remote") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Shoko Remote ${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold)
+            Text("A native Android client for Shoko Server, with AVDump and AniDB Mass Add.")
+            Text(stringResource(R.string.development_credit))
+            Text("An independent project by ichigoteguz. Not an official ShokoAnime or AniDB release.", style = MaterialTheme.typography.bodySmall)
+        }
+    }, confirmButton = { TextButton(onClick = { about = false }) { Text("Done") } })
     browserDialog?.let { dialog ->
         var input by remember(dialog) { mutableStateOf(dialog.defaultValue) }
         AlertDialog(onDismissRequest = { model.aniDb.resolveBrowserDialog(false) }, title = { Text("AniDB") },

@@ -1,5 +1,10 @@
 # Changes
 
+## 0.1.4 — Stable (November 10, 2026)
+
+- Add an About dialog with the app version and "Developed with OpenAI Codex" credit, available through the top bar's info button.
+- Add the development credit to the README and publish the repository publicly at the owner's request.
+
 ## 0.1.3 — Stable (November 10, 2026)
 
 - Owner confirmed the updated app functions as expected; published as the first stable personal release.

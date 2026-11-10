@@ -5,7 +5,7 @@ This record distinguishes local fixture verification from real services. Initial
 ## Executed
 
 - Gradle debug APK assembly: passed.
-- Signed release APK assembly and APK Signature Scheme v2 verification: passed. The release package is `dev.shoko.remote`, version `0.1.3`, and is not debuggable.
+- Signed release APK assembly and APK Signature Scheme v2 verification: passed for 0.1.3 and the 0.1.4 credit update. The current release package is `dev.shoko.remote`, version `0.1.4`, and is not debuggable.
 - JVM unit tests: **52 passed** (filename-derived anime titles, optional parser failure recovery, persisted manual queries, automatic/debounced searches, cancellation and stale-response protection, plus the earlier Shoko REST, dump, ED2K, draft and server-binding checks).
 - Android lint: zero errors. Dependency-update and style suggestions remain.
 - AniDB JavaScript fixture tests: **14 passed**, including live choice extraction, multiple tracks, review edits, disabled-field and CSS-hidden metadata preservation, unknown-field rejection, and no final submit operation.
@@ -15,6 +15,7 @@ This record distinguishes local fixture verification from real services. Initial
 - Version 0.1.2 was checked on the desktop only and missed an Android ICU pattern-syntax difference, causing a launch crash when restoring into automatic anime search. Version 0.1.3 corrects the patterns and adds direct Android regression coverage.
 - The signed 0.1.3 release was installed over the existing app without clearing data. Two cold starts restored the user's real saved query and displayed search results without a crash; the current process had no crash-buffer entries. No real dump or AniDB submission was triggered by these release checks.
 - On November 10, 2026, the owner confirmed the installed update was functioning as expected and requested a stable release. Version 0.1.3 is designated stable for the current personal-use scope. This confirmation does not establish every remaining live-service or Android-version check below.
+- The 0.1.4 update adds only an About dialog, development credit and release metadata. Release assembly, 52 JVM tests and lint passed; the signed APK's version and embedded credit resource were checked. Phone instrumentation and cold-start observations above apply to 0.1.3; 0.1.4 was not installed on a phone during this update.
 
 ## Live-service checks still required
 

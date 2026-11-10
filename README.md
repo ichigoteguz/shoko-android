@@ -2,7 +2,9 @@
 
 A native Android client for Shoko Server, starting with **unrecognized files → AVDump → AniDB Mass Add → recognition checks**.
 
-**Stable release: [Shoko Remote 0.1.3](https://github.com/ichigoteguz/shoko-android/releases/tag/v0.1.3)**, confirmed working by the owner on November 10, 2026. Download `Shoko-Remote-0.1.3.apk` from the release and install it over your existing copy to keep your connection and drafts. See [release notes](docs/releases/v0.1.3.md) for validation and remaining compatibility checks. Full WebUI parity remains on the [roadmap](docs/FEATURES.md).
+Developed with **OpenAI Codex**, in collaboration with ichigoteguz. The same credit is available in the app's **About Shoko Remote** dialog (the info button in the top bar).
+
+**Stable release: [Shoko Remote 0.1.4](https://github.com/ichigoteguz/shoko-android/releases/tag/v0.1.4)**. This adds the About dialog and development credit to the owner-confirmed 0.1.3 workflow. Download `Shoko-Remote-0.1.4.apk` from the release and install it over your existing copy to keep your connection and drafts. See [release notes](docs/releases/v0.1.4.md) for validation and remaining compatibility checks. Full WebUI parity remains on the [roadmap](docs/FEATURES.md).
 
 The app uses the WebUI's **Shoko Gray** theme: its blue accent, gray panels, dark inputs, Sora typography, and 8dp corners. It keeps that appearance in both Android system modes. Server-provided custom CSS overrides are not imported into the native theme.
 

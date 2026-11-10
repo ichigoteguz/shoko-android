@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Shoko Remote</string>
+    <string name="development_credit">Developed with OpenAI Codex.</string>
 </resources>
