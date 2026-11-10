@@ -1,0 +1,46 @@
+<!doctype html><html><head><title>Mass add files fixture</title></head><body>
+<!-- Representative, hand-authored adapter fixture based on observed control IDs.
+     It contains no downloaded page, session, credentials, or actual user files. -->
+<form id="addfilem_form" action="/anime/1/release/add" method="post">
+<input type="hidden" name="csrf" value="fixture-token">
+<div style="display:none">
+  <select id="addfilem_episodes"><option value="1">Episode 1</option></select>
+  <input id="addfilem_anime_title" value="Fixture anime">
+</div>
+<table><tbody>
+<tr><th>Group</th><td><select id="addfilem_group"><option value="0">no or unknown group</option><option value="42">Fixture Release Group</option></select><input id="addfilem_group_input"><button type="button" id="addfilem_search">Search</button></td></tr>
+<tr><th>Template</th><td><select id="addfilem_template"><option value="manual">manual</option><option value="fansub">fansub</option></select><button type="button" id="toggle_template_options">Show Template Options</button><input id="template_name" value="manual"></td></tr>
+<tr><th>CRC/Hash Status</th><td><select id="addf_crcstatus"><option value="0">not compared/not available</option><option value="1">matches official source</option><option value="2">does not match official source</option></select></td></tr>
+<tr><th>Quality / Source</th><td><select id="addfilem_quality"><option value="0">unknown</option><option value="high">high</option><option value="disabled" disabled>disabled choice</option></select><select id="addfilem_type"><option value="unknown">unknown</option><option value="www">www</option><option value="Blu-ray">Blu-ray</option></select></td></tr>
+<tr><th>Video Track</th><td>
+<label><input type="checkbox" id="addstrm_vid_flag_FLAG_3DVIDEO">3D video</label>
+<label><input type="checkbox" id="addstrm_vid_flag_FLAG_CLEAN">clean video</label>
+<label><input type="checkbox" id="addstrm_vid_flag_FLAG_CREDITLESS">creditless</label>
+<label><input type="checkbox" id="addstrm_vid_flag_FLAG_WRONGAR">wrong aspect ratio</label>
+</td></tr>
+</tbody></table>
+<button type="button" id="add_audio">Add a track</button><div id="audio"></div>
+<button type="button" id="add_subtitle">Add a track</button><div id="subtitle"></div>
+<textarea id="addfilem_ed2k"></textarea><button type="button" id="addfilem_next">Next</button>
+</form>
+<script>
+window.fixtureCounts = { submits: 0, next: 0 };
+document.getElementById('addfilem_form').addEventListener('submit', function(e) { e.preventDefault(); window.fixtureCounts.submits++; });
+document.getElementById('addfilem_next').addEventListener('click', function() { window.fixtureCounts.next++; });
+function fixtureTrack(kind) {
+  const container = document.getElementById(kind === 'aud' ? 'audio' : 'subtitle');
+  const n = container.children.length + 1;
+  const word = kind === 'aud' ? 'audio' : 'subtitle';
+  const row = document.createElement('div');
+  row.innerHTML = '<button type="button" id="del_' + word + '_' + n + '">Remove</button>' +
+    '<select id="addstrm_' + kind + '_' + n + '_type">' + (kind === 'aud' ? '<option value="normal">normal audio</option><option value="commentary">commentary audio</option>' : '<option value="soft">soft sub</option><option value="hard">hard sub</option>') + '</select>' +
+    '<select id="addstrm_' + kind + '_' + n + '_lang"><option value="' + (kind === 'aud' ? 'ja' : 'en') + '">' + (kind === 'aud' ? 'japanese' : 'english') + '</option><option value="fr">french</option></select>' +
+    (kind === 'sub' ? '<input type="checkbox" id="addstrm_sub_' + n + '_flag_FLAG_FORCOMMENTARY"><input type="checkbox" id="addstrm_sub_' + n + '_flag_FLAG_DUBSUBBED"><input type="checkbox" id="addstrm_sub_' + n + '_flag_FLAG_HEARINGIMP">' : '');
+  row.querySelector('button').addEventListener('click', function() { row.remove(); });
+  container.appendChild(row);
+}
+document.getElementById('add_audio').addEventListener('click', function() { fixtureTrack('aud'); });
+document.getElementById('add_subtitle').addEventListener('click', function() { fixtureTrack('sub'); });
+fixtureTrack('aud'); fixtureTrack('sub');
+</script>
+</body></html>

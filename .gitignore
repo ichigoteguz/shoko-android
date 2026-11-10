@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+release-signing.properties
+.signing/
+*.jks
+*.keystore
+.idea/
+captures/
+artifacts/
+dist/
+tests/anidb/node_modules/
