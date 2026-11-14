@@ -8,7 +8,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import android.os.SystemClock
 import android.webkit.CookieManager
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
@@ -27,11 +27,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-/**
- * The official page owns authentication, hidden fields, validation, and submission.
- * Only the allowlisted, current form can be read or populated by the native editor.
- * This class never clicks Next or Add Files, and never creates a raw form POST.
- */
+/** The official page owns authentication, validation and submission. Native actions only
+ * activate its allowlisted controls after an explicit user tap; no raw POST is created. */
 @SuppressLint("SetJavaScriptEnabled")
 class AniDbWebController(context: Context) {
     private val applicationContext = context.applicationContext
@@ -40,16 +37,44 @@ class AniDbWebController(context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val script = context.assets.open("anidb-adapter.js").bufferedReader().use { it.readText() }
     private var disposed = false
+    private var foreground = false
+    private var groupGeneration = 0L
+    private var documentGeneration = 0L
+    private var requestRevision = 0L
+    private var expectedAnimeId = 0
+    private var associatedDocument = false
+    private var reading = false
+    private var pendingAction: String? = null
+    private var actionStartedAt = 0L
+    private var actionErrorBaseline = ""
+    private var actionErrorRevision = 0
+    private var actionErrorDocument = 0L
+    private var submissionRejected = false
+    private var submitLocked = false
+    private var unknownSubmission = false
     private val mutableSnapshot = MutableStateFlow(AniDbFormSnapshot())
     private val mutableLoading = MutableStateFlow(false)
+    private val mutableActionBusy = MutableStateFlow(false)
     private val mutablePageError = MutableStateFlow<String?>(null)
     private val mutableJsDialog = MutableStateFlow<AniDbBrowserDialog?>(null)
     private var pendingJsResult: JsResult? = null
 
     val snapshot: StateFlow<AniDbFormSnapshot> = mutableSnapshot.asStateFlow()
     val loading: StateFlow<Boolean> = mutableLoading.asStateFlow()
+    val actionBusy: StateFlow<Boolean> = mutableActionBusy.asStateFlow()
     val pageError: StateFlow<String?> = mutablePageError.asStateFlow()
     val jsDialog: StateFlow<AniDbBrowserDialog?> = mutableJsDialog.asStateFlow()
+
+    // Poll the small allowlisted snapshot rather than exposing a general JavaScript bridge.
+    // This sees the same-document replacement performed by AniDB's Next handler.
+    private val observe = object : Runnable {
+        override fun run() {
+            if (disposed || !foreground) return
+            checkActionTimeout()
+            if (!mutableLoading.value && !reading && isAniDbOrigin(webView.url)) refresh()
+            handler.postDelayed(this, 750)
+        }
+    }
 
     val webView: WebView = WebView(hostContext).apply {
         settings.javaScriptEnabled = true
@@ -76,14 +101,12 @@ class AniDbWebController(context: Context) {
         }
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (!request.isForMainFrame) return false
-                if (isAniDbOrigin(request.url.toString())) return false
-                mutablePageError.value = "This link leaves AniDB. The native editor only operates on the official HTTPS AniDB site."
+                if (!request.isForMainFrame || isAniDbOrigin(request.url.toString())) return false
+                pageFailure("This link leaves AniDB. The native editor only operates on the official HTTPS AniDB site.")
                 return true
             }
 
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                // This is defense in depth, not a claim that a navigation callback intercepts every POST.
                 val unsafeMainFrame = request.isForMainFrame && !isAniDbOrigin(request.url.toString())
                 if (unsafeMainFrame || request.url.scheme !in setOf("https", "data", "blob")) {
                     return WebResourceResponse("text/plain", "UTF-8", 403, "HTTPS required", emptyMap(), ByteArrayInputStream(ByteArray(0)))
@@ -92,92 +115,181 @@ class AniDbWebController(context: Context) {
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                documentGeneration++
+                reading = false
+                val navigatedAnime = animeId(url)
+                if (expectedAnimeId == 0) expectedAnimeId = navigatedAnime
+                if (navigatedAnime > 0) associatedDocument = navigatedAnime == expectedAnimeId
+                else if (!isAniDbOrigin(url)) associatedDocument = false
                 mutableLoading.value = true
                 mutablePageError.value = null
-                mutableSnapshot.value = AniDbFormSnapshot(url = url.orEmpty(), message = "Loading the official AniDB page…")
+                mutableSnapshot.value = AniDbFormSnapshot(url = url.orEmpty(), animeId = if (associatedDocument) expectedAnimeId else navigatedAnime, message = "Loading the official AniDB page…")
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                if (url != view.url) return
                 mutableLoading.value = false
                 CookieManager.getInstance().flush()
-                refresh()
+                if (isAniDbOrigin(url)) refresh()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) {
-                    mutableLoading.value = false
-                    mutablePageError.value = "AniDB could not load: ${error.description}"
-                }
+                if (request.isForMainFrame) pageFailure("AniDB could not load: ${error.description}")
             }
 
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
-                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
-                    mutablePageError.value = "AniDB returned HTTP ${errorResponse.statusCode}. Read the official page before continuing."
-                }
+                if (request.isForMainFrame && errorResponse.statusCode >= 400) pageFailure("AniDB returned HTTP ${errorResponse.statusCode}. Read the official page before continuing.")
             }
 
-            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                handler.cancel()
-                mutableLoading.value = false
-                mutablePageError.value = "AniDB's secure connection could not be verified."
+            override fun onReceivedSslError(view: WebView, sslHandler: SslErrorHandler, error: SslError) {
+                sslHandler.cancel()
+                pageFailure("AniDB's secure connection could not be verified.")
             }
         }
     }
 
+    fun setForeground(active: Boolean) = onMain {
+        foreground = active
+        handler.removeCallbacks(observe)
+        if (active) handler.post(observe)
+    }
+
+    /** Invalidate callbacks and remove the previous group's document, retaining cookies. */
+    fun reset() = onMain {
+        invalidate()
+        webView.stopLoading()
+        webView.loadUrl("about:blank")
+    }
+
+    private fun invalidate() {
+        groupGeneration++
+        documentGeneration++
+        expectedAnimeId = 0
+        associatedDocument = false
+        reading = false
+        pendingAction = null
+        submitLocked = false
+        unknownSubmission = false
+        submissionRejected = false
+        mutableActionBusy.value = false
+        mutableLoading.value = false
+        mutablePageError.value = null
+        pendingJsResult?.cancel()
+        pendingJsResult = null
+        mutableJsDialog.value = null
+        mutableSnapshot.value = AniDbFormSnapshot()
+    }
+
     fun loadAnime(animeId: Int) {
         require(animeId > 0) { "Enter a positive AniDB anime ID." }
-        onMain { webView.loadUrl("https://anidb.net/anime/$animeId/release/add") }
+        onMain {
+            invalidate()
+            expectedAnimeId = animeId
+            webView.stopLoading()
+            webView.loadUrl("https://anidb.net/anime/$animeId/release/add")
+        }
     }
 
     fun attachToHost(context: Context) { onMain { hostContext.baseContext = context } }
-
     fun detachFromHost() { onMain { hostContext.baseContext = applicationContext } }
 
     fun refresh(onComplete: (AniDbFormSnapshot) -> Unit = {}) {
         onMain {
             if (!requireOrigin()) return@onMain
+            val group = groupGeneration
+            val document = documentGeneration
+            val revision = ++requestRevision
+            reading = true
             webView.evaluateJavascript(script + "\nJSON.stringify(window.__shokoAniDbV1.snapshot());") { raw ->
+                if (disposed || group != groupGeneration || document != documentGeneration || revision != requestRevision) return@evaluateJavascript
+                reading = false
                 runCatching { json.decodeFromString<AniDbFormSnapshot>(unwrap(raw)) }
-                    .onSuccess {
-                        mutableSnapshot.value = it
-                        if (it.status == "unsupported") Log.w("ShokoAniDb", "Form mapping blocked: " + it.unsupported.joinToString("; "))
-                        onComplete(it)
-                    }
-                    .onFailure { mutablePageError.value = "The AniDB form could not be read. Use its official page. ${it.message.orEmpty()}" }
+                    .onSuccess { onComplete(accept(it)) }
+                    .onFailure { pageFailure("The AniDB form could not be read. Use its official page. ${it.message.orEmpty()}") }
             }
         }
     }
 
-    fun apply(edits: AniDbEdits, onComplete: (Boolean) -> Unit = {}) =
-        execute("apply", json.encodeToString(edits), onComplete)
+    private fun accept(incoming: AniDbFormSnapshot): AniDbFormSnapshot {
+        val newError = incoming.errorMessage.isNotBlank() && (incoming.errorMessage != actionErrorBaseline || incoming.errorRevision != actionErrorRevision || documentGeneration != actionErrorDocument)
+        if (associatedDocument && newError && (pendingAction == "submitFiles" || submitLocked)) submissionRejected = true
+        val page = incoming.copy(animeId = if (associatedDocument) expectedAnimeId else animeId(incoming.url), submissionRejected = associatedDocument && submissionRejected)
+        if (associatedDocument && (page.status in setOf("success", "error") || newError || pendingAction == "next" && page.status == "review")) {
+            pendingAction = null
+            mutableActionBusy.value = false
+            if (page.status == "error" || newError) { submitLocked = false; unknownSubmission = false }
+            if (page.status == "success") { submitLocked = true; unknownSubmission = false }
+        }
+        if (page.errorMessage.isNotBlank()) mutablePageError.value = page.errorMessage
+        val result = if (unknownSubmission && page.status !in setOf("success", "error", "login", "challenge", "unsupported")) page.copy(status = "unknown", message = UNKNOWN_SUBMISSION) else page
+        mutableSnapshot.value = result
+        return result
+    }
 
+    fun apply(edits: AniDbEdits, onComplete: (Boolean) -> Unit = {}) = execute("apply", json.encodeToString(edits), onComplete)
     fun selectTemplate(value: String) = apply(AniDbEdits(values = mapOf("addfilem_template" to value)))
+    fun searchGroups(query: String) { execute("searchGroups", json.encodeToString(query)) {} }
+    fun applyReview(edits: List<AniDbReviewEdit>, onComplete: (Boolean) -> Unit = {}) = execute("applyReview", json.encodeToString(edits), onComplete)
+    fun next(onComplete: (Boolean) -> Unit = {}) = activate("next", onComplete)
+    fun submitFiles(onComplete: (Boolean) -> Unit = {}) = activate("submitFiles", onComplete)
 
-    fun searchGroups(query: String) {
-        execute("searchGroups", json.encodeToString(query)) { ok ->
-            if (ok) {
-                // Group search updates the same document asynchronously. Native controls refresh
-                // after the response; there is deliberately no general-purpose JavaScript bridge.
-                handler.postDelayed({ if (!disposed) refresh() }, 700)
-                handler.postDelayed({ if (!disposed) refresh() }, 2_000)
+    private fun activate(method: String, onComplete: (Boolean) -> Unit) = onMain {
+        if (mutableActionBusy.value || method == "submitFiles" && submitLocked) { onComplete(false); return@onMain }
+        if (!requireOrigin() || !associatedDocument || animeId(webView.url) != expectedAnimeId || expectedAnimeId <= 0) { onComplete(false); return@onMain }
+        pendingAction = method
+        actionErrorBaseline = mutableSnapshot.value.errorMessage
+        actionErrorRevision = mutableSnapshot.value.errorRevision
+        actionErrorDocument = documentGeneration
+        actionStartedAt = SystemClock.elapsedRealtime()
+        mutableActionBusy.value = true
+        if (method == "submitFiles") { submitLocked = true; submissionRejected = false }
+        execute(method, "") { ok ->
+            if (!ok) {
+                pendingAction = null
+                mutableActionBusy.value = false
+                if (method == "submitFiles") submitLocked = false
+            }
+            onComplete(ok)
+        }
+    }
+
+    private fun checkActionTimeout() {
+        if (pendingAction != null && pendingJsResult == null && SystemClock.elapsedRealtime() - actionStartedAt >= 30_000) {
+            if (pendingAction == "submitFiles") markUnknown()
+            else {
+                pendingAction = null
+                mutableActionBusy.value = false
+                mutablePageError.value = "AniDB did not return the file review. Inspect its official page before continuing."
             }
         }
     }
 
-    fun applyReview(edits: List<AniDbReviewEdit>, onComplete: (Boolean) -> Unit = {}) =
-        execute("applyReview", json.encodeToString(edits), onComplete)
+    private fun markUnknown() {
+        pendingAction = null
+        mutableActionBusy.value = false
+        submitLocked = true
+        unknownSubmission = true
+        mutablePageError.value = UNKNOWN_SUBMISSION
+        mutableSnapshot.value = mutableSnapshot.value.copy(status = "unknown", animeId = expectedAnimeId, message = UNKNOWN_SUBMISSION)
+    }
+
+    private fun pageFailure(message: String) {
+        mutableLoading.value = false
+        if (pendingAction == "submitFiles") markUnknown()
+        else { pendingAction = null; mutableActionBusy.value = false }
+        mutablePageError.value = if (unknownSubmission) "$message $UNKNOWN_SUBMISSION" else message
+    }
 
     fun clearError() { mutablePageError.value = null }
-
-    fun resolveBrowserDialog(accepted: Boolean, input: String = "") {
-        onMain {
-            val result = pendingJsResult
-            pendingJsResult = null
-            mutableJsDialog.value = null
-            if (accepted) {
-                if (result is JsPromptResult) result.confirm(input) else result?.confirm()
-            } else result?.cancel()
-        }
+    fun resolveBrowserDialog(accepted: Boolean, input: String = "") = onMain {
+        val result = pendingJsResult
+        pendingJsResult = null
+        mutableJsDialog.value = null
+        if (accepted) {
+            if (result is JsPromptResult) result.confirm(input) else result?.confirm()
+        } else result?.cancel()
+        actionStartedAt = SystemClock.elapsedRealtime()
+        refresh()
     }
 
     private fun showBrowserDialog(url: String, message: String, kind: String, defaultValue: String, result: JsResult): Boolean {
@@ -200,13 +312,33 @@ class AniDbWebController(context: Context) {
     }
 
     private fun execute(method: String, argument: String, onComplete: (Boolean) -> Unit) {
-        check(method in setOf("apply", "applyReview", "searchGroups"))
+        check(method in setOf("apply", "applyReview", "searchGroups", "next", "submitFiles"))
         onMain {
             if (!requireOrigin()) { onComplete(false); return@onMain }
+            val group = groupGeneration
+            val document = documentGeneration
+            ++requestRevision
+            reading = false
             mutablePageError.value = null
             webView.evaluateJavascript(script + "\nJSON.stringify(window.__shokoAniDbV1.$method($argument));") { raw ->
+                if (disposed || group != groupGeneration) return@evaluateJavascript
+                // The official action may synchronously start navigation before the callback.
+                if (document != documentGeneration) { onComplete(method in setOf("next", "submitFiles")); return@evaluateJavascript }
                 val result = runCatching { json.decodeFromString<AniDbAdapterResult>(unwrap(raw)) }.getOrNull()
-                result?.snapshot?.let { mutableSnapshot.value = it }
+                if (result == null && method in setOf("next", "submitFiles")) {
+                    // The click may already have reached AniDB even when JS cannot return.
+                    if (method == "submitFiles") markUnknown()
+                    else mutablePageError.value = "AniDB’s Next response could not be read. Inspect the official page."
+                    onComplete(true)
+                    return@evaluateJavascript
+                }
+                result?.snapshot?.let { accept(it) }
+                if (result?.ok == false && result.attempted && method in setOf("next", "submitFiles")) {
+                    if (method == "submitFiles") markUnknown()
+                    else mutablePageError.value = "AniDB’s Next outcome could not be read. Inspect the official page."
+                    onComplete(true)
+                    return@evaluateJavascript
+                }
                 if (result?.ok != true) mutablePageError.value = result?.error?.takeIf { it.isNotBlank() }
                     ?: "AniDB's form could not be updated. Your draft remains saved."
                 onComplete(result?.ok == true)
@@ -219,18 +351,17 @@ class AniDbWebController(context: Context) {
         mutablePageError.value = "Open the official AniDB Mass Add page before using the native editor."
         return false
     }
-
     private fun unwrap(raw: String?): String {
         require(!raw.isNullOrBlank() && raw != "null") { "No form response" }
         return json.decodeFromString<String>(raw)
     }
-
     private fun onMain(block: () -> Unit) {
         if (disposed) return
         if (Looper.myLooper() == Looper.getMainLooper()) block() else handler.post { if (!disposed) block() }
     }
-
     companion object {
+        private const val UNKNOWN_SUBMISSION = "AniDB’s submission outcome is unknown. Inspect the official result or check Shoko before submitting again. The app will not repeat Add Files."
+        private fun animeId(url: String?): Int = runCatching { Regex("^/anime/(\\d+)/release/add/?$").matchEntire(Uri.parse(url).path.orEmpty())?.groupValues?.get(1)?.toIntOrNull() ?: 0 }.getOrDefault(0)
         fun isAniDbOrigin(url: String?): Boolean = runCatching {
             val uri = Uri.parse(url)
             uri.scheme.equals("https", ignoreCase = true) && uri.host.equals("anidb.net", ignoreCase = true) &&

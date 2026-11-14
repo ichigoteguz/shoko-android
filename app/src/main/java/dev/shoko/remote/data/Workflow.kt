@@ -41,6 +41,9 @@ data class ReviewValue(val index: Int, val episode: String, val version: String,
 data class HistoryEntry(val time: Long, val message: String)
 
 @Serializable
+data class PendingGroup(val id: String, val animeId: Int, val animeTitle: String, val fileIds: List<Int>)
+
+@Serializable
 data class Workspace(
     val serverUrl: String = "",
     val selected: List<SelectedFile> = emptyList(),
@@ -48,7 +51,38 @@ data class Workspace(
     val history: List<HistoryEntry> = emptyList(),
     val page: String = "files",
     val animeSearchQuery: String? = null,
+    // Null distinguishes pre-subset workspaces from a deliberately empty selection.
+    val anidbSelection: List<Int>? = null,
+    val pendingGroups: List<PendingGroup> = emptyList(),
 ) {
+    val pendingFileIds: Set<Int> get() = pendingGroups.flatMap { it.fileIds }.toSet()
+    val anidbFiles: List<SelectedFile> get() {
+        val ids = anidbSelection ?: legacySubset()
+        return selected.filter { it.id in ids && it.id !in pendingFileIds }
+    }
+    val subsetReady: Boolean get() = anidbFiles.isNotEmpty() && anidbFiles.all { it.recognized || it.status == "Dumped" }
+    val poolRecognized: Boolean get() = selected.isNotEmpty() && selected.all { it.recognized }
+
+    private fun legacySubset(): List<Int> {
+        val links = draft.values["addfilem_ed2k"].orEmpty()
+        if (links.isBlank()) return selected.map { it.id }
+        val parsed = runCatching { Ed2kValidator.parse(links) }.getOrDefault(emptyList())
+        return selected.filter { file -> parsed.any { it.size == file.size && it.hash.equals(file.hash, true) } }.map { it.id }
+    }
+
+    fun recoverSelection(): Workspace = copy(anidbSelection = anidbSelection ?: legacySubset())
+
+    fun clearGroup(): Workspace = copy(draft = Draft(), anidbSelection = emptyList(), animeSearchQuery = null)
+
+    fun startNewBatch(): Workspace = clearGroup().copy(selected = emptyList(), pendingGroups = emptyList(), page = "files")
+
+    fun reportSubmitted(id: String, fileIds: List<Int>): Workspace = clearGroup().copy(page = "dump",
+        pendingGroups = pendingGroups + PendingGroup(id, draft.animeId, draft.animeTitle, fileIds.distinct()))
+
+    fun removeCompletedGroups(): Workspace = copy(pendingGroups = pendingGroups.filterNot { group ->
+        group.fileIds.isNotEmpty() && group.fileIds.all { id -> selected.any { it.id == id && it.recognized } }
+    })
+
     fun boundToServer(url: String): Workspace = if (serverUrl == url) this
         else Workspace(serverUrl = url, history = history)
 
@@ -59,7 +93,7 @@ data class Workspace(
         // A filename suggestion is optional; even a parser initialization failure
         // must leave the saved batch usable with manual anime search.
         val suggestion = try {
-            suggestTitle(selected.map { it.name })
+            suggestTitle(anidbFiles.map { it.name })
         } catch (_: LinkageError) {
             null
         } catch (_: Exception) {

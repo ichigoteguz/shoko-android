@@ -21,9 +21,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -55,13 +56,12 @@ private fun ShokoApp(model: MainViewModel) {
     val browserDialog by model.aniDb.jsDialog.collectAsStateWithLifecycle()
     var settings by remember { mutableStateOf(false) }
     var about by rememberSaveable { mutableStateOf(false) }
-    val page = state.workspace.page
-    val tabs = listOf(Triple("files", "Files", Icons.AutoMirrored.Filled.List), Triple("dump", "AVDump", Icons.Default.CloudUpload),
-        Triple("add", "AniDB", Icons.Default.PlaylistAdd), Triple("history", "Activity", Icons.Default.History))
+    // Render the screen and its active tab from the same resolved destination.
+    val page = state.workspace.page.takeIf { it in setOf("files", "dump", "add", "history", "official") } ?: "files"
     Scaffold(
         topBar = {
             TopAppBar(title = { Column {
-                Text(if (page == "official") "AniDB review" else "Shoko Remote", fontWeight = FontWeight.Bold)
+                Text(if (page == "official") "AniDB" else "Shoko Remote", fontWeight = FontWeight.Bold)
                 Text(if (page == "official") "Official AniDB page" else if (state.connected) "Connected · Shoko Server" else "Your library, in reach",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } }, navigationIcon = { if (page == "official") IconButton(onClick = { model.readOfficialPage() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to editor") } },
@@ -74,17 +74,11 @@ private fun ShokoApp(model: MainViewModel) {
                 })
         },
         bottomBar = {
-            if (page != "official" && state.connected) NavigationBar(containerColor = ShokoColors.Navigation) {
-                tabs.forEach { (id, title, icon) -> NavigationBarItem(selected = page == id, onClick = { model.navigate(id) },
-                    icon = { Icon(icon, title) }, label = { Text(title) }, colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = ShokoColors.Primary, selectedTextColor = ShokoColors.Primary,
-                        unselectedIconColor = ShokoColors.Text, unselectedTextColor = ShokoColors.Text,
-                        indicatorColor = Color.Transparent)) }
-            }
+            if (page != "official" && state.connected) ShokoNavigationBar(page, model::navigate)
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (state.busy || state.filesLoading && page == "files") LinearProgressIndicator(Modifier.fillMaxWidth())
             state.notice?.let { message -> Notice(message, onDismiss = model::dismissNotice) }
             if (page == "official") {
                 pageError?.let { Notice(it, onDismiss = model.aniDb::clearError) }
@@ -126,6 +120,25 @@ private fun ShokoApp(model: MainViewModel) {
             } },
             confirmButton = { TextButton(onClick = { model.aniDb.resolveBrowserDialog(true, input) }) { Text("OK") } },
             dismissButton = { if (dialog.kind != "alert") TextButton(onClick = { model.aniDb.resolveBrowserDialog(false) }) { Text("Cancel") } })
+    }
+}
+
+@Composable
+private fun ShokoNavigationBar(page: String, onNavigate: (String) -> Unit) {
+    val tabs = listOf(Triple("files", "Files", Icons.AutoMirrored.Filled.List), Triple("dump", "AVDump", Icons.Default.CloudUpload),
+        Triple("add", "AniDB", Icons.Default.PlaylistAdd), Triple("history", "Activity", Icons.Default.History))
+    // A programmatic destination change must also discard the old tab's visual
+    // interaction state, rather than leaving its press/focus or selection animation.
+    key(page) {
+        NavigationBar(containerColor = ShokoColors.Navigation) {
+            tabs.forEach { (id, title, icon) ->
+                NavigationBarItem(selected = page == id, onClick = { onNavigate(id) },
+                    icon = { Icon(icon, title) }, label = { Text(title) }, colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = ShokoColors.Primary, selectedTextColor = ShokoColors.Primary,
+                        unselectedIconColor = ShokoColors.Text, unselectedTextColor = ShokoColors.Text,
+                        indicatorColor = ShokoColors.Selected))
+            }
+        }
     }
 }
 
@@ -186,16 +199,17 @@ private fun PageHeading(step: String, title: String, subtitle: String) {
 @Composable
 private fun FilesScreen(state: AppState, model: MainViewModel) {
     var query by rememberSaveable { mutableStateOf(state.query) }
+    LaunchedEffect(state.query, state.filesReset) { query = state.query }
     var clearBatch by remember { mutableStateOf(false) }
     val selected = state.workspace.selected
     val locked = state.workspace.draft.animeId > 0
     LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeading("01 · Choose files", "Unrecognized files", "Select a release to dump and add to AniDB.") }
+        item { PageHeading("01 · Choose files", "Unrecognized files", "Select files for AVDump. You can add each anime to AniDB separately.") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ShokoTextField(query, { query = it }, label = { Text("Search filenames") }, singleLine = true, modifier = Modifier.weight(1f))
-                FilledTonalIconButton(onClick = { model.searchFiles(query) }, enabled = !state.busy) { Icon(Icons.Default.Search, "Search files") }
-                IconButton(onClick = { model.refreshFiles(state.pageNumber) }, enabled = !state.busy) { Icon(Icons.Default.Refresh, "Refresh files") }
+                FilledTonalIconButton(onClick = { model.searchFiles(query) }, enabled = !state.filesLoading) { Icon(Icons.Default.Search, "Search files") }
+                IconButton(onClick = { model.refreshFiles(state.pageNumber) }, enabled = !state.filesLoading) { Icon(Icons.Default.Refresh, "Refresh files") }
             }
         }
         item { SectionCard {
@@ -203,14 +217,14 @@ private fun FilesScreen(state: AppState, model: MainViewModel) {
                 Text("${selected.size} selected", fontWeight = FontWeight.Bold)
                 Text("${state.total} unrecognized", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (locked) Text("Your Mass Add draft is saved. Continue it in AniDB, or start a new batch to change files.", style = MaterialTheme.typography.bodySmall)
+            if (locked) Text("Your AniDB draft is saved. Continue it, or change its selected files on AVDump.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ShokoButton(onClick = { model.navigate("dump") }, enabled = selected.isNotEmpty()) { Text("Continue"); Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.padding(start = 8.dp).size(18.dp)) }
                 if (!locked) TextButton(onClick = model::selectVisible) { Text("Select page") }
                 if (selected.isNotEmpty()) TextButton(onClick = { clearBatch = true }) { Text("New batch") }
             }
         } }
-        if (state.files.isEmpty() && !state.busy) item {
+        if (state.files.isEmpty() && !state.filesLoading) item {
             EmptyCard(Icons.Default.CheckCircle, "All clear here", if (state.query.isBlank()) "No unrecognized files were found on this server." else "Try another filename or clear the search.")
         }
         items(state.files, key = { it.id }) { file ->
@@ -230,9 +244,9 @@ private fun FilesScreen(state: AppState, model: MainViewModel) {
             }
         }
         item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { model.refreshFiles(state.pageNumber - 1) }, enabled = state.pageNumber > 1 && !state.busy) { Text("Previous") }
+            TextButton(onClick = { model.refreshFiles(state.pageNumber - 1) }, enabled = state.pageNumber > 1 && !state.filesLoading) { Text("Previous") }
             Text("Page ${state.pageNumber}", Modifier.align(Alignment.CenterVertically), style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = { model.refreshFiles(state.pageNumber + 1) }, enabled = state.pageNumber * 100 < state.total && !state.busy) { Text("Next") }
+            TextButton(onClick = { model.refreshFiles(state.pageNumber + 1) }, enabled = state.pageNumber * 100 < state.total && !state.filesLoading) { Text("Next") }
         } }
     }
     if (clearBatch) AlertDialog(onDismissRequest = { clearBatch = false }, title = { Text("Start a new batch?") },
@@ -243,31 +257,52 @@ private fun FilesScreen(state: AppState, model: MainViewModel) {
 @Composable
 private fun DumpScreen(state: AppState, model: MainViewModel) {
     val selected = state.workspace.selected
+    val subset = state.workspace.anidbFiles
+    val pendingIds = state.workspace.pendingGroups.flatMap { it.fileIds }.toSet()
+    val locked = state.workspace.draft.animeId > 0
     var confirmDump by remember { mutableStateOf(false) }
+    var changeFiles by remember { mutableStateOf(false) }
     var retry by remember { mutableStateOf<SelectedFile?>(null) }
-    val canContinue = selected.isNotEmpty() && selected.all { it.status == "Dumped" || it.recognized }
+    val canContinue = state.workspace.subsetReady
     LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeading("02 · Prepare files", "AVDump", "Your server does the work. You can leave and return while it runs.") }
-        if (selected.isEmpty()) item { EmptyCard(Icons.Default.CloudUpload, "Choose your files first", "Open Files and select the release you want to add.") }
+        item { PageHeading("02 · Prepare files", "AVDump", "Dump the whole pool, then choose files for one anime at a time.") }
+        if (selected.isEmpty()) item { EmptyCard(Icons.Default.CloudUpload, "Choose your files first", "Open Files and select files for your AVDump pool.") }
         else {
             item { SectionCard {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("${selected.count { it.status == "Dumped" }} / ${selected.size} dumped", fontWeight = FontWeight.Bold)
                     Text(if (state.live) "Live progress" else "Status refresh", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
-                if (state.workspace.draft.submission != "Not submitted") Text(state.workspace.draft.submission, style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ShokoButton(onClick = { confirmDump = true }, enabled = !state.busy && selected.any { it.status in setOf("Not dumped", "Failed") }) { Text("Run AVDump") }
+                    ShokoButton(onClick = { confirmDump = true }, enabled = !state.busy && selected.any { !it.recognized && it.status in setOf("Not dumped", "Failed") }) { Text("Run AVDump") }
                     ShokoSecondaryButton(onClick = model::recheckDumpStatus, enabled = !state.busy) { Text("Refresh") }
                 }
-                ShokoButton(onClick = { model.navigate("add") }, enabled = canContinue, modifier = Modifier.fillMaxWidth()) { Text("Continue to AniDB"); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null) }
+                Text("${subset.size} selected for AniDB", fontWeight = FontWeight.Medium)
+                Text(if (locked) "The files in your current AniDB draft are locked."
+                    else "Use the checkboxes below to choose one anime. Other files can keep dumping or wait for recognition.", style = MaterialTheme.typography.bodySmall)
+                ShokoButton(onClick = { model.navigate("add") }, enabled = canContinue, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (locked) "Continue AniDB draft" else "Choose files for AniDB")
+                    Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
+                }
+                if (locked) TextButton(onClick = { changeFiles = true }) { Text("Change selected files") }
+            } }
+            items(state.workspace.pendingGroups, key = { "pending:" + it.id }) { group -> SectionCard {
+                Text(group.animeTitle.ifBlank { "AniDB #${group.animeId}" }, fontWeight = FontWeight.Bold)
+                val recognized = selected.count { it.id in group.fileIds && it.recognized }
+                Text("$recognized / ${group.fileIds.size} recognized by Shoko", style = MaterialTheme.typography.bodySmall)
+                Text("Submitted · waiting for recognition", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                TextButton(onClick = { model.recheckPendingGroup(group.id) }, enabled = !state.busy) { Text("Queue another recognition check") }
             } }
             items(selected, key = { it.id }) { file -> SectionCard {
+                val pending = file.id in pendingIds
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(if (file.recognized || file.status == "Dumped") Icons.Default.CheckCircle else Icons.Default.InsertDriveFile, null, tint = MaterialTheme.colorScheme.primary)
+                    Checkbox(checked = subset.any { it.id == file.id }, onCheckedChange = { model.toggleAniDbFile(file.id) },
+                        enabled = !locked && !pending && !file.recognized,
+                        modifier = Modifier.semantics { contentDescription = "Select ${file.name} for AniDB" })
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(file.name, fontWeight = FontWeight.Medium)
-                        Text(if (file.recognized) "Recognized by Shoko" else file.status, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(if (file.recognized) "Recognized by Shoko" else if (pending) "Submitted · waiting for recognition" else file.status,
+                            style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         if (file.status == "Running" && file.progress != null) {
                             LinearProgressIndicator(progress = { (file.progress.toFloat() / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
                             Text("${file.progress.roundToInt()}%", style = MaterialTheme.typography.labelSmall)
@@ -277,17 +312,23 @@ private fun DumpScreen(state: AppState, model: MainViewModel) {
                     }
                 }
             } }
-            if (state.workspace.draft.submission != "Not submitted") item {
-                ShokoSecondaryButton(onClick = model::submittedAndRecheck, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) { Text("Queue another recognition check") }
-            }
         }
     }
+    if (changeFiles) ChangeSelectedFilesDialog(model, onDismiss = { changeFiles = false })
     if (confirmDump) AlertDialog(onDismissRequest = { confirmDump = false }, title = { Text("Dump selected public releases?") },
-        text = { Text("AniDB accepts publicly released, unmodified, intact files. Check the selected files before continuing. Your server will send their hashes and media details through AVDump.") },
+        text = { Text("AniDB accepts publicly released, unmodified, intact files. Your server will send hashes and media details for files in the AVDump pool that still need dumping.") },
         confirmButton = { TextButton(onClick = { confirmDump = false; model.startDump() }) { Text("Run AVDump") } }, dismissButton = { TextButton(onClick = { confirmDump = false }) { Text("Cancel") } })
     retry?.let { file -> AlertDialog(onDismissRequest = { retry = null }, title = { Text("Allow an explicit retry?") },
         text = { Text("An interrupted request may have reached the server. Only retry after checking that this file is not still being dumped.") },
         confirmButton = { TextButton(onClick = { model.allowDumpRetry(file.id); retry = null }) { Text("Allow retry") } }, dismissButton = { TextButton(onClick = { retry = null }) { Text("Cancel") } }) }
+}
+
+@Composable
+private fun ChangeSelectedFilesDialog(model: MainViewModel, onDismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Change selected files?") },
+        text = { Text("Discard the current AniDB draft and choose a new group? Your AVDump pool, completed dumps and pending recognition checks stay saved.") },
+        confirmButton = { TextButton(onClick = { onDismiss(); model.changeSelectedFiles() }) { Text("Discard draft & choose files") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep draft") } })
 }
 
 @Composable
@@ -296,26 +337,33 @@ private fun MassAddScreen(state: AppState, model: MainViewModel) {
     val snapshot = model.snapshot()
     val liveSnapshot by model.aniDb.snapshot.collectAsStateWithLifecycle()
     val error by model.aniDb.pageError.collectAsStateWithLifecycle()
+    val loading by model.aniDb.loading.collectAsStateWithLifecycle()
+    val actionBusy by model.aniDb.actionBusy.collectAsStateWithLifecycle()
     val query = state.workspace.animeSearchQuery.orEmpty()
-    var groupQuery by rememberSaveable { mutableStateOf("") }
-    var advanced by rememberSaveable { mutableStateOf(false) }
-    var templateTools by rememberSaveable { mutableStateOf(false) }
-    var date by rememberSaveable { mutableStateOf("") }
+    var groupQuery by rememberSaveable(draft.animeId) { mutableStateOf("") }
+    var advanced by rememberSaveable(draft.animeId) { mutableStateOf(false) }
+    var templateTools by rememberSaveable(draft.animeId) { mutableStateOf(false) }
+    var changeFiles by remember { mutableStateOf(false) }
+    var date by rememberSaveable(draft.animeId) { mutableStateOf(AniDbReleaseDate.today()) }
     val primaryIds = setOf("addfilem_group", "addfilem_template", "addf_crcstatus", "addfilem_quality", "addfilem_type", "addfilem_ed2k")
-    val canUse = liveSnapshot.status in setOf("form", "review") && liveSnapshot.url.contains("/anime/${draft.animeId}/")
-    val needsDump = state.workspace.selected.any { it.status != "Dumped" && !it.recognized }
+    val canUse = !state.editorBusy && !loading && !actionBusy && liveSnapshot.status in setOf("form", "review") && DraftSync.belongsToAnime(liveSnapshot, draft.animeId)
+    val needsDump = state.workspace.anidbFiles.isEmpty() || state.workspace.anidbFiles.any { it.status != "Dumped" && !it.recognized }
+    val submitted = liveSnapshot.status == "success" || draft.submission.startsWith("AniDB confirmed:")
+    val canSubmit = canUse && !state.busy && liveSnapshot.status == "review" &&
+        (draft.submission == "Not submitted" || draft.submission.startsWith("AniDB error:"))
     LazyColumn(Modifier.widthIn(max = 760.dp).fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { PageHeading("03 · Add to AniDB", "Mass Add Files", "The fields you use most, with every other option close by.") }
         if (needsDump) {
             item { SectionCard {
                 Text("Finish preparing your files", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("All selected files need a successful AVDump before you add them to AniDB.")
+                Text("Choose files on AVDump and wait for those files to finish dumping before adding them to AniDB.")
                 ShokoButton(onClick = { model.navigate("dump") }) { Text("Go to AVDump") }
             } }
         } else if (draft.animeId <= 0) {
             item { SectionCard {
                 Text("Choose the anime", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("Use one anime per batch. Check the title before adding files.", style = MaterialTheme.typography.bodySmall)
+                Text("${state.workspace.anidbFiles.size} files selected. Choose the anime for this group.", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { model.changeSelectedFiles() }) { Text("Change selected files") }
                 ShokoTextField(query, model::setAnimeQuery, label = { Text("Anime title or AniDB ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 ShokoButton(onClick = { model.searchAnime(query) }, enabled = query.isNotBlank() && !state.animeSearching) { Icon(Icons.Default.Search, null); Spacer(Modifier.width(8.dp)); Text("Find anime") }
                 if (state.animeSearching) {
@@ -337,15 +385,25 @@ private fun MassAddScreen(state: AppState, model: MainViewModel) {
         } else {
             item { SectionCard {
                 Text(draft.animeTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("AniDB #${draft.animeId} · draft saved on this phone", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (!canUse) Text("Open AniDB and sign in to load its current form. Your saved edits stay here.", style = MaterialTheme.typography.bodySmall)
-                ShokoSecondaryButton(onClick = model::openAniDb) { Icon(Icons.Default.Language, null); Spacer(Modifier.width(8.dp)); Text(if (canUse) "Open official page" else "Open AniDB & sign in") }
-                TextButton(onClick = model::changeAnime) { Text("Choose another anime") }
+                Text("AniDB #${draft.animeId} · ${state.workspace.anidbFiles.size} files · draft saved on this phone", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (loading || actionBusy || state.editorBusy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(if (loading) "Loading AniDB…" else "Waiting for AniDB…", style = MaterialTheme.typography.bodySmall)
+                } else if (!canUse && !submitted) Text("Your saved edits stay here. Open AniDB if sign-in or a browser check is needed.", style = MaterialTheme.typography.bodySmall)
+                ShokoSecondaryButton(onClick = model::openAniDb, enabled = !state.editorBusy && !actionBusy && !loading) { Icon(Icons.Default.Language, null); Spacer(Modifier.width(8.dp)); Text("Open official page") }
+                if (!submitted) {
+                    TextButton(onClick = model::changeAnime, enabled = !state.editorBusy && !actionBusy && !loading) { Text("Choose another anime") }
+                    TextButton(onClick = { changeFiles = true }, enabled = !state.editorBusy && !actionBusy && !loading) { Text("Change selected files") }
+                }
             } }
             error?.let { item { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } }
+            if (submitted || liveSnapshot.status == "error" || draft.submission != "Not submitted") item { SectionCard {
+                Text(if (submitted) "Files added to AniDB" else "AniDB submission", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(if (liveSnapshot.status in setOf("success", "error")) liveSnapshot.message else draft.submission)
+            } }
             if (liveSnapshot.status == "unsupported") item { SectionCard { Text("AniDB’s form has changed", fontWeight = FontWeight.Bold); Text(liveSnapshot.message); Text("Use the official page to inspect the new options. No fields will be silently dropped.") } }
-            if (snapshot == null) item { EmptyCard(Icons.Default.Language, "Ready for AniDB sign-in", "After signing in, tap Use app editor to load the mobile controls.") }
-            else {
+            if (snapshot == null && !loading && !submitted) item { EmptyCard(Icons.Default.Language, "Waiting for AniDB", "The editor opens automatically when AniDB’s form is ready. Open the official page if it needs your attention.") }
+            else if (snapshot != null && !submitted) {
                 item { SectionCard {
                     Text("Release details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     snapshot.fields.firstOrNull { it.id == "addfilem_group" }?.let { field -> NativeField(field, draft.values[field.id] ?: field.value, enabled = canUse) { model.setField(field.id, it) } }
@@ -356,13 +414,7 @@ private fun MassAddScreen(state: AppState, model: MainViewModel) {
                     snapshot.fields.firstOrNull { it.id == "addfilem_template" }?.let { field -> NativeField(field, draft.values[field.id] ?: field.value, enabled = canUse, onChange = model::selectBuiltinTemplate) }
                     TextButton(onClick = { templateTools = !templateTools }) { Icon(Icons.Default.Bookmarks, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("My templates") }
                     if (templateTools) TemplateTools(state, model)
-                    snapshot.fields.filter { it.id in setOf("addf_crcstatus", "addfilem_quality", "addfilem_type") }.forEach { field -> NativeField(field, draft.values[field.id] ?: field.value) { model.setField(field.id, it) } }
-                } }
-                if (snapshot.status != "review") item { SectionCard {
-                    Text("ED2K links", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Filled from your Shoko selection. You can edit or paste links here.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    ShokoTextField(draft.values["addfilem_ed2k"].orEmpty(), { model.setField("addfilem_ed2k", it) }, minLines = 4, maxLines = 9,
-                        modifier = Modifier.fillMaxWidth(), label = { Text("ED2K links") }, textStyle = MaterialTheme.typography.bodySmall)
+                    snapshot.fields.filter { it.id in setOf("addf_crcstatus", "addfilem_quality", "addfilem_type") }.forEach { field -> NativeField(field, draft.values[field.id] ?: field.value, enabled = canUse) { model.setField(field.id, it) } }
                 } }
                 item { SectionCard {
                     TextButton(onClick = { advanced = !advanced }, modifier = Modifier.fillMaxWidth()) {
@@ -371,49 +423,64 @@ private fun MassAddScreen(state: AppState, model: MainViewModel) {
                     if (advanced) {
                         val fields = snapshot.fields.filter { it.id !in primaryIds && it.id != "addfilem_group_input" && !it.id.startsWith("template_") }
                         Text("Video flags", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        fields.filter { it.id.startsWith("addstrm_vid_") }.forEach { field -> NativeCheck(field, draft.checks[field.id] ?: field.checked) { model.setCheck(field.id, it) } }
+                        fields.filter { it.id.startsWith("addstrm_vid_") }.forEach { field -> NativeCheck(field, draft.checks[field.id] ?: field.checked, enabled = canUse) { model.setCheck(field.id, it) } }
                         TrackControls("Audio tracks", draft.audioTracks ?: snapshot.audioTracks, canUse) { model.changeTrackCount(true, it) }
                         fields.filter { it.id.startsWith("addstrm_aud_") }.forEach { field -> NativeField(field, draft.values[field.id] ?: field.value, enabled = canUse) { model.setField(field.id, it) } }
                         HorizontalDivider()
                         TrackControls("Subtitle tracks", draft.subtitleTracks ?: snapshot.subtitleTracks, canUse) { model.changeTrackCount(false, it) }
                         fields.filter { it.id.startsWith("addstrm_sub_") }.forEach { field ->
-                            if (field.kind == "checkbox") NativeCheck(field, draft.checks[field.id] ?: field.checked) { model.setCheck(field.id, it) }
+                            if (field.kind == "checkbox") NativeCheck(field, draft.checks[field.id] ?: field.checked, enabled = canUse) { model.setCheck(field.id, it) }
                             else NativeField(field, draft.values[field.id] ?: field.value, enabled = canUse) { model.setField(field.id, it) }
                         }
                     }
                 } }
-                if (snapshot.rows.isNotEmpty()) {
+                if (snapshot.status != "review") item { SectionCard {
+                    Text("ED2K links", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Filled from the files chosen for this anime. You can edit or paste links here.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ShokoTextField(draft.values["addfilem_ed2k"].orEmpty(), { model.setField("addfilem_ed2k", it) }, minLines = 4, maxLines = 9,
+                        enabled = canUse, modifier = Modifier.fillMaxWidth(), label = { Text("ED2K links") }, textStyle = MaterialTheme.typography.bodySmall)
+                } }
+                if (snapshot.status == "review" && snapshot.rows.isNotEmpty()) {
                     item { SectionCard {
                         Text("Per-file review", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        ShokoTextField(date, { date = it }, label = { Text("Release date · yyyy-mm-dd") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        TextButton(onClick = { model.applyDate(date) }) { Text("Apply date to all files") }
+                        Text("Check AniDB’s detected EPNO and Version for each file. Blank release dates start with today’s date.", style = MaterialTheme.typography.bodySmall)
+                        ShokoTextField(date, { date = it }, enabled = canUse, label = { Text("Release date · dd.mm.yyyy") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        TextButton(onClick = { model.applyDate(date) }, enabled = canUse) { Text("Apply date to all files") }
                     } }
                     items(snapshot.rows, key = { it.index }) { row ->
                         val values = draft.review.find { it.index == row.index } ?: ReviewValue(row.index, row.episode.value, row.version.value, row.releaseDate.value)
                         SectionCard {
                             Text(row.filename, fontWeight = FontWeight.Medium)
-                            NativeField(row.episode.copy(label = "Episode"), values.episode) { model.setReview(row.index, episode = it) }
-                            NativeField(row.version.copy(label = "Version"), values.version) { model.setReview(row.index, version = it) }
-                            ShokoTextField(values.releaseDate, { model.setReview(row.index, date = it) }, label = { Text("Release date") }, placeholder = { Text("yyyy-mm-dd") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            NativeField(row.episode.copy(label = "EPNO"), values.episode, enabled = canUse) { model.setReview(row.index, episode = it) }
+                            NativeField(row.version.copy(label = "Version"), values.version, enabled = canUse) { model.setReview(row.index, version = it) }
+                            ShokoTextField(values.releaseDate, { model.setReview(row.index, date = it) }, enabled = canUse, label = { Text("Release date") }, placeholder = { Text("dd.mm.yyyy") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         }
                     }
                 }
                 item { SectionCard {
-                    Text(if (snapshot.status == "review") "Ready for final review" else "Continue to the file review", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(if (snapshot.status == "review") "Your edits will be copied into AniDB’s review. Check everything, then press Add Files yourself."
-                        else "Open the populated AniDB page and press Next. Tap Use app editor again to adjust episodes, versions and release dates here.", style = MaterialTheme.typography.bodySmall)
-                    ShokoButton(onClick = model::continueOnAniDb, enabled = canUse, modifier = Modifier.fillMaxWidth()) { Text(if (snapshot.status == "review") "Review on AniDB" else "Continue on AniDB"); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null) }
+                    Text(if (snapshot.status == "review") "Confirm file details" else "Continue to file details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(if (snapshot.status == "review") "Add Files submits these details to AniDB. You can also open its official review."
+                        else "Next uses AniDB’s episode and version detection, then opens the per-file editor here.", style = MaterialTheme.typography.bodySmall)
+                    if (snapshot.status == "review") {
+                        ShokoButton(onClick = model::addFiles, enabled = canSubmit, modifier = Modifier.fillMaxWidth()) { Text("Add Files") }
+                        TextButton(onClick = model::reviewOnAniDb, enabled = canUse) { Text("Review on AniDB") }
+                    } else ShokoButton(onClick = model::continueOnAniDb, enabled = canUse, modifier = Modifier.fillMaxWidth()) {
+                        Text("Next"); Spacer(Modifier.width(8.dp)); Icon(Icons.AutoMirrored.Filled.ArrowForward, null)
+                    }
                 } }
             }
+            item { ShokoSecondaryButton(onClick = model::submittedAndRecheck, enabled = !state.editorBusy && !state.busy && !actionBusy && !loading,
+                modifier = Modifier.fillMaxWidth()) { Text("I submitted · check Shoko") } }
         }
         item { Spacer(Modifier.height(12.dp)) }
     }
+    if (changeFiles) ChangeSelectedFilesDialog(model, onDismiss = { changeFiles = false })
 }
 
 @Composable
-private fun NativeCheck(field: AniDbField, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().toggleableWithLabel(checked, !field.disabled, onChange), verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked, onCheckedChange = onChange, enabled = !field.disabled)
+private fun NativeCheck(field: AniDbField, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().toggleableWithLabel(checked, enabled && !field.disabled, onChange), verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked, onCheckedChange = onChange, enabled = enabled && !field.disabled)
         Text(field.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
     }
 }
@@ -491,13 +558,16 @@ private fun TemplateTools(state: AppState, model: MainViewModel) {
 private fun OfficialPage(model: MainViewModel, modifier: Modifier) {
     val snapshot by model.aniDb.snapshot.collectAsStateWithLifecycle()
     val loading by model.aniDb.loading.collectAsStateWithLifecycle()
+    val actionBusy by model.aniDb.actionBusy.collectAsStateWithLifecycle()
+    val state by model.state.collectAsStateWithLifecycle()
     Column(modifier.fillMaxWidth()) {
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Surface(color = MaterialTheme.colorScheme.surfaceContainer) { Text(
             when (snapshot.status) {
                 "review" -> "Check the file details before pressing AniDB’s Add Files button."
-                "form" -> "Your release form. Press Next here, then Use app editor for mobile per-file controls."
-                else -> "Sign in on AniDB, then tap Use app editor. No AniDB password is saved by the app."
+                "form" -> "Official release form. Use app editor to continue with mobile controls."
+                "success", "error" -> snapshot.message
+                else -> "Complete AniDB sign-in or its browser check. The app editor opens automatically when the form is ready."
             }, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
         if (snapshot.status == "page" && !loading) TextButton(onClick = model::openAniDb, modifier = Modifier.fillMaxWidth()) {
             Text("Open selected anime’s Mass Add form")
@@ -509,8 +579,9 @@ private fun OfficialPage(model: MainViewModel, modifier: Modifier) {
         }, modifier = Modifier.fillMaxWidth().weight(1f), onRelease = { model.aniDb.detachFromHost() })
         Surface(tonalElevation = 4.dp) {
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { model.aniDb.refresh() }) { Icon(Icons.Default.Refresh, "Read current AniDB form") }
-                ShokoSecondaryButton(onClick = { model.submittedAndRecheck() }, modifier = Modifier.weight(1f)) { Text("I submitted · check Shoko") }
+                IconButton(onClick = { model.aniDb.refresh() }, enabled = !actionBusy && !loading) { Icon(Icons.Default.Refresh, "Read current AniDB form") }
+                ShokoSecondaryButton(onClick = { model.submittedAndRecheck() }, enabled = !state.busy && !actionBusy && !loading,
+                    modifier = Modifier.weight(1f)) { Text("I submitted · check Shoko") }
             }
         }
     }

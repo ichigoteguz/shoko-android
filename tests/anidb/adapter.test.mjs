@@ -171,17 +171,18 @@ test('reads and edits per-file review without clicking final Add Files', () => {
   const { adapter, d, events } = setup();
   d.getElementById('addfilem_ed2k').remove();
   const output = d.createElement('table'); output.id = 'addfilem_output';
-  output.innerHTML = '<tr><th>No</th><th>Filename</th><th>CRC</th><th>Ext.</th><th>Epno</th><th>version</th><th>Release Date</th></tr><tr><td>1</td><td>fixture.mkv</td><td>12345678</td><td>mkv</td><td><select><option value="1">1</option><option value="2">2</option></select></td><td><select><option value="1">v1</option><option value="2">v2</option></select></td><td><input value=""></td></tr><tr><td colspan="7"><input id="releasedate"><button type="button" id="applytoall">Apply to all</button></td></tr>';
+  output.innerHTML = '<tr><th>No</th><th>Filename</th><th>CRC</th><th>Ext.</th><th>Epno</th><th>version</th><th>Release Date</th></tr><tr><td>1</td><td>fixture.mkv</td><td>12345678</td><td>mkv</td><td><select><option value="1">1</option><option value="2">2</option></select></td><td><select><option value="1">v1</option><option value="2">v2</option></select></td><td><input pattern="[0-9]{2}[.][0-9]{2}[.][0-9]{4}" value=""></td></tr><tr><td colspan="7"><input id="releasedate"><button type="button" id="applytoall">Apply to all</button></td></tr>';
   d.querySelector('form').append(output);
   const final = d.createElement('button'); final.id = 'addfilem_add_files'; final.type = 'submit'; final.textContent = 'Add Files';
   final.addEventListener('click', () => events.final++); d.querySelector('form').append(final);
   assert.equal(adapter.snapshot().status, 'review');
   assert.equal(adapter.snapshot().rows[0].filename, 'fixture.mkv');
-  assert.equal(adapter.applyReview([{ index: 0, episode: '2', version: '2', releaseDate: '2026-11-08' }]).ok, true);
+  assert.equal(adapter.snapshot().dateFormat, 'dd.MM.yyyy');
+  assert.equal(adapter.applyReview([{ index: 0, episode: '2', version: '2', releaseDate: '08.11.2026' }]).ok, true);
   const row = adapter.snapshot().rows[0];
-  assert.equal(row.episode.value, '2'); assert.equal(row.version.value, '2'); assert.equal(row.releaseDate.value, '2026-11-08');
+  assert.equal(row.episode.value, '2'); assert.equal(row.version.value, '2'); assert.equal(row.releaseDate.value, '08.11.2026');
   assert.equal(events.final, 0); assert.equal(events.submits, 0); assert.equal(events.next, 0);
-  assert.equal('submit' in adapter, false); assert.equal('next' in adapter, false);
+  assert.equal('submit' in adapter, false); assert.equal(typeof adapter.next, 'function');
 });
 
 test('rejects non-AniDB and cleartext origins', () => {
@@ -210,4 +211,136 @@ test('identifies login separately from unknown pages and never infers submission
   assert.equal(adapter.snapshot().status, 'login');
   password.remove(); d.title = 'Just a moment…';
   assert.equal(adapter.snapshot().status, 'challenge');
+});
+
+function createReview(d, events) {
+  d.getElementById('addfilem_ed2k')?.remove();
+  d.getElementById('addfilem_next')?.remove();
+  const output = d.createElement('table'); output.id = 'addfilem_output';
+  // These values represent AniDB's filename-derived choices, not app guesses.
+  output.innerHTML = '<tr><td>1</td><td>fixture - 02v2.mkv</td><td>12345678</td><td>mkv</td><td><select><option value="1">1</option><option selected value="2">2</option></select></td><td><select><option value="1">v1</option><option selected value="2">v2</option></select></td><td><input pattern="[0-9]{2}[.][0-9]{2}[.][0-9]{4}" value="01.11.2026"></td></tr>';
+  d.querySelector('form').append(output);
+  const final = d.createElement('button'); final.id = 'addfilem_add_files'; final.type = 'submit'; final.textContent = 'Add Files';
+  final.addEventListener('click', () => events.final++);
+  d.querySelector('form').append(final);
+}
+
+test('explicit Next uses the official handler and observes asynchronous same-document review', async () => {
+  const { adapter, d, w, events } = setup();
+  const original = d.getElementById('addfilem_group');
+  d.getElementById('addfilem_next').addEventListener('click', () => w.setTimeout(() => createReview(d, events), 0));
+  assert.equal(events.next, 0);
+  assert.equal(adapter.next().ok, true);
+  assert.equal(adapter.next().ok, false);
+  await new Promise(resolve => w.setTimeout(resolve, 10));
+  const review = adapter.snapshot();
+  assert.equal(review.status, 'review');
+  assert.equal(review.rows[0].episode.value, '2');
+  assert.equal(review.rows[0].version.value, '2');
+  assert.equal(review.dateFormat, 'dd.MM.yyyy');
+  assert.equal(review.rows[0].releaseDate.value, '01.11.2026');
+  assert.equal(d.getElementById('addfilem_group'), original);
+  assert.equal(events.next, 1); assert.equal(events.submits, 0); assert.equal(events.final, 0);
+});
+
+test('explicit Add Files activates the submitter once and retains hidden form fields', () => {
+  const { adapter, d, events } = setup();
+  createReview(d, events);
+  let submitter;
+  d.querySelector('form').addEventListener('submit', event => { submitter = event.submitter; });
+  assert.equal(adapter.applyReview([{ index: 0, episode: '1', version: '2', releaseDate: '14.11.2026' }]).ok, true);
+  assert.equal(events.final, 0);
+  assert.equal(adapter.submitFiles().ok, true);
+  assert.equal(adapter.submitFiles().ok, false);
+  assert.equal(events.final, 1); assert.equal(events.submits, 1);
+  assert.equal(submitter.id, 'addfilem_add_files');
+  assert.equal(d.querySelector('[name="csrf"]').value, 'fixture-token');
+  assert.equal(adapter.snapshot().status, 'review'); // Merely submitting proves no acceptance.
+});
+
+test('release-date format blocks ISO submission and preserves an edited dotted date', () => {
+  const { adapter, d, events } = setup();
+  createReview(d, events);
+  assert.equal(adapter.applyReview([{ index: 0, episode: '2', version: '2', releaseDate: '2026-11-14' }]).ok, true);
+  assert.equal(adapter.submitFiles().ok, false);
+  assert.equal(events.final, 0);
+  assert.equal(adapter.applyReview([{ index: 0, episode: '2', version: '2', releaseDate: '14.11.2026' }]).ok, true);
+  assert.equal(adapter.applyReview([{ index: 0, episode: '2', version: '2', releaseDate: '05.12.2026' }]).ok, true);
+  assert.equal(adapter.snapshot().rows[0].releaseDate.value, '05.12.2026');
+  assert.equal(adapter.submitFiles().ok, true);
+  assert.equal(events.final, 1);
+  assert.equal(d.getElementById('addfilem_output').querySelector('input').value, '05.12.2026');
+});
+
+test('action controls must belong to current form, be enabled and keep HTTPS AniDB origin', () => {
+  const { adapter, d, events } = setup();
+  const next = d.getElementById('addfilem_next');
+  next.disabled = true; assert.equal(adapter.next().ok, false);
+  next.disabled = false;
+  next.setAttribute('formaction', 'https://example.invalid/collect'); assert.equal(adapter.next().ok, false);
+  next.removeAttribute('formaction'); d.body.append(next); assert.equal(adapter.next().ok, false);
+  assert.equal(events.next, 0); assert.equal(events.submits, 0);
+});
+
+test('action respects browser-required fields before activating official handlers', () => {
+  const { adapter, d, events } = setup();
+  d.getElementById('addfilem_ed2k').required = true;
+  assert.equal(adapter.next().ok, false);
+  assert.equal(events.next, 0);
+});
+
+test('only an explicit visible site message confirms success, errors remain editable', () => {
+  const { adapter, d } = setup();
+  const arbitrary = d.createElement('p'); arbitrary.textContent = 'Files successfully added'; d.body.append(arbitrary);
+  assert.equal(adapter.snapshot().status, 'form');
+  const result = d.createElement('div'); result.className = 'g_msg'; result.textContent = '2 files successfully added.'; result.hidden = true; d.body.append(result);
+  assert.equal(adapter.snapshot().status, 'form');
+  result.hidden = false;
+  assert.equal(adapter.snapshot().status, 'success');
+  assert.equal(adapter.snapshot().message, '2 files successfully added.');
+  result.className = 'g_msg error'; result.textContent = 'Invalid release date.';
+  assert.equal(adapter.snapshot().status, 'form');
+  assert.equal(adapter.snapshot().errorMessage, 'Invalid release date.');
+  d.querySelector('form').remove();
+  assert.equal(adapter.snapshot().status, 'error');
+});
+
+test('preexisting validation errors do not unlock a second in-flight submission', () => {
+  const { adapter, d, events } = setup();
+  createReview(d, events);
+  const result = d.createElement('div'); result.className = 'g_msg error'; result.textContent = 'Invalid release date.'; d.body.append(result);
+  assert.equal(adapter.submitFiles().ok, true);
+  assert.equal(adapter.submitFiles().ok, false);
+  assert.equal(events.final, 1);
+});
+
+test('action failure distinguishes rejection before activation from unknown outcome afterward', () => {
+  const { adapter, d } = setup();
+  const next = d.getElementById('addfilem_next');
+  next.disabled = true;
+  assert.equal(adapter.next().attempted, false);
+  next.disabled = false;
+  next.click = () => { throw new Error('handler interrupted'); };
+  const result = adapter.next();
+  assert.equal(result.ok, false);
+  assert.equal(result.attempted, true);
+  assert.equal(adapter.next().attempted, false);
+});
+
+test('same-text validation response revision unlocks a rejected submission, unrelated edits do not', async () => {
+  const { adapter, d, w, events } = setup();
+  createReview(d, events);
+  const result = d.createElement('div'); result.className = 'g_msg error'; result.textContent = 'Invalid release date.'; d.body.append(result);
+  await new Promise(resolve => w.setTimeout(resolve, 0));
+  const baseline = adapter.snapshot().errorRevision;
+  assert.equal(adapter.submitFiles().ok, true);
+  d.getElementById('addfilem_group').append(new w.Option('Another group', '7'));
+  await new Promise(resolve => w.setTimeout(resolve, 0));
+  assert.equal(adapter.snapshot().errorRevision, baseline);
+  assert.equal(adapter.submitFiles().ok, false);
+  result.textContent = 'Invalid release date.';
+  await new Promise(resolve => w.setTimeout(resolve, 0));
+  assert.notEqual(adapter.snapshot().errorRevision, baseline);
+  assert.equal(adapter.submitFiles().ok, true);
+  assert.equal(events.final, 2);
 });

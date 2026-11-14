@@ -27,7 +27,9 @@ import org.junit.Test
 class AppSmokeTest {
     @get:Rule val compose = createEmptyComposeRule()
     private val dumped = AtomicBoolean(false)
+    private val recognized = AtomicBoolean(false)
     private val dumpRequests = AtomicInteger(0)
+    private val fileListRequests = AtomicInteger(0)
     private val animeQueries = CopyOnWriteArrayList<String>()
     private val releaseName = "[SubsPlease] Sousou no Frieren - 01 (1080p) [DEADBEEF].mkv"
     private lateinit var server: MockWebServer
@@ -47,7 +49,11 @@ class AppSmokeTest {
                     if (path.startsWith("/signalr/")) return MockResponse().setResponseCode(404)
                     if (request.getHeader("apikey") != "instrumentation-only") return MockResponse().setResponseCode(401)
                     return when {
-                        path == "/api/v3/File" -> json("""{"Total":1,"List":[${fileJson()}]}""")
+                        path == "/api/v3/File" -> {
+                            fileListRequests.incrementAndGet()
+                            if (recognized.get()) json("""{"Total":0,"List":[]}""")
+                            else json("""{"Total":1,"List":[${fileJson()}]}""")
+                        }
                         path == "/api/v3/File/42" -> json(fileJson())
                         path == "/api/v3/Series/AniDB/Search" -> {
                             animeQueries += request.requestUrl!!.queryParameter("query").orEmpty()
@@ -75,18 +81,16 @@ class AppSmokeTest {
     }
 
     @Test fun passwordlessLoginSelectionDumpAndRecovery() {
-        awaitText("Connect to Shoko")
-        compose.onNodeWithText("Server address").performTextInput(server.url("/").toString())
-        compose.onNodeWithText("Shoko username").performTextInput("Default")
-        // Empty passwords are valid in Shoko; this must be an enabled, reachable mobile action.
-        compose.onNodeWithText("Connect to Shoko").performScrollTo().assertIsEnabled().performClick()
-        awaitText(releaseName)
+        login()
+        assertSelectedTab("Files")
         compose.onNodeWithText(releaseName).performClick()
         compose.onNodeWithText("1 selected").assertExists()
         compose.onNodeWithText("Continue").performScrollTo().performClick()
         awaitText("Run AVDump")
-        compose.onNodeWithText("Continue to AniDB").assertIsNotEnabled()
-        compose.onNodeWithText("Run AVDump").performClick()
+        assertSelectedTab("AVDump")
+        compose.onNodeWithText("Choose files for AniDB").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Select $releaseName for AniDB").performScrollTo().performClick()
+        compose.onNodeWithText("Run AVDump").performScrollTo().performClick()
         compose.onNodeWithText("Dump selected public releases?").assertExists()
         compose.onAllNodesWithText("Run AVDump").onLast().performClick()
         compose.waitUntil(20_000) { dumpRequests.get() == 1 }
@@ -95,7 +99,7 @@ class AppSmokeTest {
         }
         compose.onNodeWithText("Refresh").performClick()
         compose.waitUntil(20_000) {
-            runCatching { compose.onNodeWithText("Continue to AniDB").assertIsEnabled() }.isSuccess
+            runCatching { compose.onNodeWithText("Choose files for AniDB").assertIsEnabled() }.isSuccess
         }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         runBlocking {
@@ -107,26 +111,103 @@ class AppSmokeTest {
         }
         scenario!!.close()
         scenario = ActivityScenario.launch(MainActivity::class.java)
-        awaitText("Continue to AniDB")
-        compose.onNodeWithText("Continue to AniDB").assertIsEnabled()
+        awaitText("Choose files for AniDB")
+        compose.onNodeWithText("Choose files for AniDB").assertIsEnabled()
         // Restoring state must only read status, never repeat an already accepted write.
         assertEquals(1, dumpRequests.get())
-        compose.onNodeWithText("Continue to AniDB").performScrollTo().performClick()
+        compose.onNodeWithText("Choose files for AniDB").performScrollTo().performClick()
         awaitText("AniDB #99")
+        assertSelectedTab("AniDB")
         compose.onNodeWithText("Anime title or AniDB ID").assertTextContains("Sousou no Frieren")
         // Results appear without pressing Find anime; restarting the Activity must not repeat it.
         assertEquals(listOf("Sousou no Frieren"), animeQueries.toList())
         scenario!!.recreate()
         awaitText("AniDB #99")
+        assertSelectedTab("AniDB")
         compose.onNodeWithText("Anime title or AniDB ID").assertTextContains("Sousou no Frieren")
         assertEquals(1, animeQueries.size)
+    }
+
+    @Test fun returningToFilesRefreshesAutomaticallyAndRecognizedPoolStartsFresh() {
+        login()
+        val initialReads = fileListRequests.get()
+        compose.onNodeWithText("AVDump", useUnmergedTree = false).performClick()
+        awaitText("Choose your files first")
+        compose.onNodeWithText("Files").performClick()
+        compose.waitUntil(20_000) { fileListRequests.get() > initialReads }
+        awaitText(releaseName)
+        compose.onNodeWithText(releaseName).performClick()
+        compose.onNodeWithText("Continue").performScrollTo().performClick()
+        awaitText("Run AVDump")
+        assertSelectedTab("AVDump")
+        val readsBeforeRecognition = fileListRequests.get()
+        recognized.set(true)
+        // Let foreground recognition polling perform the automatic navigation.
+        // A Refresh tap here could hide a stale selected-tab bug on this path.
+        awaitText("Unrecognized files")
+        compose.waitUntil(20_000) { fileListRequests.get() > readsBeforeRecognition }
+        awaitText("All clear here")
+        compose.onNodeWithText("0 selected").assertExists()
+        compose.onNodeWithText(releaseName).assertDoesNotExist()
+        assertSelectedTab("Files")
+        compose.onNode(isSelectable() and hasText("AVDump")).assertIsNotSelected()
+        assertEquals(0, dumpRequests.get())
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        runBlocking {
+            withTimeout(10_000) {
+                while (withContext(Dispatchers.IO) {
+                    val payload = (context.applicationContext as ShokoApplication).database.workspace().load()?.payload
+                    payload == null || !payload.contains("\"selected\":[]") || !payload.contains("\"page\":\"files\"")
+                }) delay(50)
+            }
+        }
+        scenario!!.recreate()
+        awaitText("Unrecognized files")
+        assertSelectedTab("Files")
+    }
+
+    @Test fun bottomNavigationFollowsManualAndGuardedPageChanges() {
+        login()
+        assertSelectedTab("Files")
+
+        compose.onNode(isSelectable() and hasText("AVDump")).performClick()
+        awaitText("Choose your files first")
+        assertSelectedTab("AVDump")
+
+        // With no ready subset, the AniDB tab redirects to the actual AVDump page.
+        compose.onNode(isSelectable() and hasText("AniDB")).performClick()
+        awaitText("Finish AVDump for the selected files before adding them to AniDB.")
+        assertSelectedTab("AVDump")
+        compose.onNode(isSelectable() and hasText("AniDB")).assertIsNotSelected()
+
+        compose.onNode(isSelectable() and hasText("Activity")).performClick()
+        awaitText("A record of your batch requests and confirmed progress.")
+        assertSelectedTab("Activity")
+
+        compose.onNode(isSelectable() and hasText("Files")).performClick()
+        awaitText("Unrecognized files")
+        assertSelectedTab("Files")
+    }
+
+    private fun assertSelectedTab(title: String) {
+        compose.onAllNodes(isSelectable() and isSelected()).assertCountEquals(1)
+        compose.onNode(isSelectable() and hasText(title)).assertIsSelected()
+    }
+
+    private fun login() {
+        awaitText("Connect to Shoko")
+        compose.onNodeWithText("Server address").performTextInput(server.url("/").toString())
+        compose.onNodeWithText("Shoko username").performTextInput("Default")
+        // Empty passwords are valid in Shoko; this must be an enabled, reachable mobile action.
+        compose.onNodeWithText("Connect to Shoko").performScrollTo().assertIsEnabled().performClick()
+        awaitText(releaseName)
     }
 
     private fun awaitText(text: String) = compose.waitUntil(20_000) {
         compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
     }
 
-    private fun fileJson(): String = """{"ID":42,"Size":780552997,"Hashes":{"ED2K":"0123456789ABCDEF0123456789ABCDEF","CRC32":"1234ABCD"},"Locations":[{"RelativePath":"$releaseName"}],"AVDump":{"Status":null,"LastDumpedAt":${if (dumped.get()) "\"2026-11-08T12:00:00Z\"" else "null"},"LastVersion":"3"},"SeriesIDs":[]}"""
+    private fun fileJson(): String = """{"ID":42,"Size":780552997,"Hashes":{"ED2K":"0123456789ABCDEF0123456789ABCDEF","CRC32":"1234ABCD"},"Locations":[{"RelativePath":"$releaseName"}],"AVDump":{"Status":null,"LastDumpedAt":${if (dumped.get()) "\"2026-11-08T12:00:00Z\"" else "null"},"LastVersion":"3"},"AniDB":${if (recognized.get()) "{\"ID\":123}" else "null"},"SeriesIDs":[]}"""
 
     private fun json(value: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(value)
 }

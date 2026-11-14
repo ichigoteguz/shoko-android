@@ -1,5 +1,25 @@
 # Changes
 
+## 0.1.7 — Released (November 14, 2026)
+
+- Publish the refresh, separate-subset and native AniDB submission workflow developed in 0.1.5, including the 0.1.6 date-format correction.
+- Resolve the screen and selected bottom tab from the same destination, including fallback to Files.
+- Reset bottom-bar visual interaction state on destination changes and show a visible active-tab indicator.
+- Cover automatic recognition return, guarded navigation and Activity recreation with tab-selection assertions.
+
+## 0.1.6 — Date format correction (November 14, 2026)
+
+- Use AniDB's `dd.mm.yyyy` release-date format for native defaults, labels and form metadata.
+- Convert valid ISO release dates in existing drafts to the correct format while preserving manual edits and blanks.
+
+## 0.1.5 — Local validation (November 14, 2026)
+
+- Refresh Files on return and foreground resume, clamp shrinking pagination, and reject outdated responses.
+- Separate the AVDump pool from each anime's AniDB subset; keep pending recognition groups while preparing the next anime.
+- Reset completed groups and return to refreshed Files when Shoko recognizes the full pool.
+- Automatically open the native editor after AniDB authentication; add native Next and Add Files actions, editable default release dates, and explicit submission results.
+- Preserve optional official-page review and block automatic retries of interrupted submissions.
+
 ## 0.1.4 — Stable (November 10, 2026)
 
 - Add an About dialog with the app version and "Developed with OpenAI Codex" credit, available through the top bar's info button.

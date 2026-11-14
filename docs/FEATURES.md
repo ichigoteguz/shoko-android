@@ -11,10 +11,10 @@ The first release is a complete vertical workflow. The remaining WebUI features 
 | Native Mass Add common fields | Implemented; values/choices read from current form |
 | Advanced video/audio/subtitle options | Implemented; live options, repeatable tracks |
 | Phone templates and defaults | Implemented; separate from desktop browser cookies |
-| Native per-file episode/version/date review | Implemented after website Next |
-| Official AniDB final submit | User-operated in WebView; live acceptance requires validation |
+| Native per-file episode/version/date review | Native Next activates official detection; editable default dates |
+| Official AniDB final submit | Native Add Files activates official control; optional WebView review; owner reported successful contribution and recognition |
 | Draft and interrupted-job recovery | Implemented; no automatic replay of writes |
-| Shoko recognition rechecks | Implemented; separate from reported submission |
+| Shoko recognition rechecks | Pending groups, foreground refresh, automatic full-pool reset; separate from reported submission |
 | Multiple saved servers | Later |
 | Manual linking and unlinking | Next milestone |
 | Ignored files and restore | Next milestone |

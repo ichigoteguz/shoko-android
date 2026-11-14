@@ -65,19 +65,93 @@ class DraftSyncTest {
     @Test fun reviewThreeWayMergeKeepsNativeVersionAndOfficialDate() {
         val baseline = page(rows = listOf(row("one.mkv")))
         val edited = draft(baseline).copy(review = listOf(ReviewValue(0, "1", "v2", "")))
-        val changed = page(rows = listOf(row("one.mkv", date = "2026-11-08")))
+        val changed = page(rows = listOf(row("one.mkv", date = "08.11.2026")))
         val result = DraftSync.merge(edited, changed).review.single()
         assertEquals("v2", result.version)
-        assertEquals("2026-11-08", result.releaseDate)
+        assertEquals("08.11.2026", result.releaseDate)
     }
 
     @Test fun differentFileIdentityCannotInheritAnotherFilesEdits() {
         val baseline = page(rows = listOf(row("one.mkv")))
-        val edited = draft(baseline).copy(review = listOf(ReviewValue(0, "99", "v5", "2020-01-01")))
-        val result = DraftSync.merge(edited, page(rows = listOf(row("two.mkv")))).review.single()
+        val edited = draft(baseline).copy(review = listOf(ReviewValue(0, "99", "v5", "01.01.2020")))
+        val result = DraftSync.merge(edited, page(rows = listOf(row("two.mkv"))), today = "14.11.2026").review.single()
         assertEquals("1", result.episode)
         assertEquals("v1", result.version)
-        assertEquals("", result.releaseDate)
+        assertEquals("14.11.2026", result.releaseDate)
+    }
+
+    @Test fun firstReviewUsesDetectedEpisodeVersionAndDefaultsOnlyBlankDates() {
+        val detected = page(rows = listOf(row("one.mkv", episode = "12", version = "v3")))
+        val initial = DraftSync.merge(Draft(animeId = 42), detected, today = "14.11.2026").review.single()
+        assertEquals("12", initial.episode)
+        assertEquals("v3", initial.version)
+        assertEquals("14.11.2026", initial.releaseDate)
+        val dated = detected.copy(rows = listOf(row("one.mkv", date = "29.02.2020")))
+        assertEquals("29.02.2020", DraftSync.merge(Draft(animeId = 42), dated, today = "14.11.2026").review.single().releaseDate)
+    }
+
+    @Test fun refreshAndRestartDoNotReplaceDefaultedOrExplicitlyEditedDates() {
+        val official = page(rows = listOf(row("one.mkv")))
+        val initial = DraftSync.merge(Draft(animeId = 42), official, today = "14.11.2026")
+        assertEquals("14.11.2026", DraftSync.merge(initial, official, today = "15.11.2026").review.single().releaseDate)
+        for (date in listOf("29.02.2024", "")) {
+            val edited = initial.copy(review = initial.review.map { it.copy(releaseDate = date) })
+            val restored = Json.decodeFromString<Draft>(Json.encodeToString(edited))
+            assertEquals(date, DraftSync.merge(restored, official, preserveSaved = true, today = "15.11.2026").review.single().releaseDate)
+            assertEquals(date, DraftSync.merge(edited, official, today = "15.11.2026").review.single().releaseDate)
+        }
+    }
+
+    @Test fun baselineInlineErrorCannotOverwriteAnInFlightSubmission() {
+        val submitting = Draft(submission = "Submitting to AniDB")
+        val baselineError = page(rows = listOf(row("one.mkv"))).copy(errorMessage = "Invalid episode")
+        assertEquals(submitting.submission, DraftSync.submissionFeedback(submitting, baselineError, actionBusy = true))
+        assertEquals(submitting.submission, DraftSync.submissionFeedback(submitting, baselineError, actionBusy = false))
+    }
+
+    @Test fun unchangedErrorsAfterUnknownOrReloadCannotEnableAnotherSubmission() {
+        val unknown = Draft(submission = "Outcome unknown; check AniDB before retrying")
+        val restored = Json.decodeFromString<Draft>(Json.encodeToString(unknown))
+        for (status in listOf("form", "review", "error")) {
+            val oldError = AniDbFormSnapshot(status = status, errorMessage = "Invalid episode", message = "Invalid episode")
+            assertEquals(restored.submission, DraftSync.submissionFeedback(restored, oldError, actionBusy = false))
+        }
+    }
+
+    @Test fun confirmedNewRejectionMakesAnAmbiguousAttemptRetryableOnlyAfterCompletion() {
+        val rejection = page(rows = listOf(row("one.mkv"))).copy(errorMessage = "Invalid episode", submissionRejected = true)
+        for (submission in listOf("Submitting to AniDB", "Outcome unknown; check AniDB before retrying")) {
+            val pending = Draft(submission = submission)
+            assertEquals(submission, DraftSync.submissionFeedback(pending, rejection, actionBusy = true))
+            assertEquals("AniDB error: Invalid episode", DraftSync.submissionFeedback(pending, rejection, actionBusy = false))
+        }
+    }
+
+    @Test fun validationErrorsBeforeAnySubmissionRemainVisibleAndEditable() {
+        val validation = page().copy(errorMessage = "Select a group")
+        assertEquals("AniDB error: Select a group", DraftSync.submissionFeedback(Draft(), validation, actionBusy = false))
+        val correctedAttempt = Draft(submission = "AniDB error: Select a group")
+        assertEquals("AniDB error: Invalid episode", DraftSync.submissionFeedback(correctedAttempt,
+            validation.copy(errorMessage = "Invalid episode"), actionBusy = false))
+    }
+
+    @Test fun onlyExplicitSuccessConfirmsAcceptanceNotNavigationOrMessageText() {
+        val submitting = Draft(submission = "Submitting to AniDB")
+        val message = "Files successfully added"
+        assertEquals("AniDB confirmed: $message", DraftSync.submissionFeedback(submitting,
+            AniDbFormSnapshot(status = "success", message = message), actionBusy = false))
+        for (status in listOf("page", "form", "review", "login", "challenge")) {
+            val navigation = AniDbFormSnapshot(status = status, url = "https://anidb.net/anime/42", message = message)
+            assertEquals(submitting.submission, DraftSync.submissionFeedback(submitting, navigation, actionBusy = false))
+        }
+    }
+
+    @Test fun unknownOutcomeIsDistinctFromARejectedOrAcceptedSubmission() {
+        val result = DraftSync.submissionFeedback(Draft(submission = "Submitting to AniDB"),
+            AniDbFormSnapshot(status = "unknown", message = "Response interrupted", errorMessage = "Old validation error"), actionBusy = false)
+        assertEquals("Outcome unknown; check AniDB before retrying", result)
+        assertFalse(result.startsWith("AniDB error:"))
+        assertFalse(result.startsWith("AniDB confirmed:"))
     }
 
     @Test fun recoveredExtraTracksCanBeRecreatedBeforeTheirValuesAreTransferred() {

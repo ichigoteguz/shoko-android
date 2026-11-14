@@ -18,7 +18,28 @@ object DraftSync {
     fun decodeSchema(draft: Draft): AniDbFormSnapshot? =
         runCatching { json.decodeFromString<AniDbFormSnapshot>(draft.schema) }.getOrNull()
 
-    fun merge(old: Draft, incoming: AniDbFormSnapshot, preserveSaved: Boolean = false, adoptTemplate: Boolean = false): Draft {
+    fun normalizeReleaseDates(draft: Draft): Draft {
+        fun normalize(row: ReviewValue) = row.copy(releaseDate = AniDbReleaseDate.normalize(row.releaseDate))
+        val schema = decodeSchema(draft)?.let { snapshot ->
+            json.encodeToString(snapshot.copy(dateFormat = "dd.MM.yyyy", rows = snapshot.rows.map { row ->
+                row.copy(releaseDate = row.releaseDate.copy(value = AniDbReleaseDate.normalize(row.releaseDate.value)))
+            }))
+        } ?: draft.schema
+        return draft.copy(schema = schema, review = draft.review.map(::normalize), reviewBaseline = draft.reviewBaseline.map(::normalize))
+    }
+
+    /** Only a new, confirmed rejection may make an ambiguous submission retryable. */
+    fun submissionFeedback(draft: Draft, page: AniDbFormSnapshot, actionBusy: Boolean): String {
+        if (page.status == "success") return "AniDB confirmed: ${page.message}"
+        if (page.status == "unknown") return "Outcome unknown; check AniDB before retrying"
+        val mayReject = page.submissionRejected || draft.submission == "Not submitted" || draft.submission.startsWith("AniDB error:")
+        val error = if (page.status == "error") page.message else page.errorMessage
+        return if (error.isNotBlank() && !actionBusy && mayReject) "AniDB error: $error" else draft.submission
+    }
+
+    fun merge(saved: Draft, incoming: AniDbFormSnapshot, preserveSaved: Boolean = false, adoptTemplate: Boolean = false,
+        today: String = AniDbReleaseDate.today()): Draft {
+        val old = normalizeReleaseDates(saved)
         val previous = decodeSchema(old)
         val beforeValues = previous?.fields?.associate { it.id to it.value }.orEmpty()
         val beforeChecks = previous?.fields?.associate { it.id to it.checked }.orEmpty()
@@ -53,10 +74,10 @@ object DraftSync {
             old.checks.filterKeys { allowedTrack(it, audio, subtitles) }.forEach { (id, value) -> checks.putIfAbsent(id, value) }
         }
         val identities = incoming.rows.map(::identity)
-        val pageReview = incoming.rows.map { ReviewValue(it.index, it.episode.value, it.version.value, it.releaseDate.value) }
+        val pageReview = incoming.rows.map { ReviewValue(it.index, it.episode.value, it.version.value, AniDbReleaseDate.normalize(it.releaseDate.value)) }
         val review = when {
             incoming.status != "review" -> old.review
-            old.reviewIdentity != identities -> pageReview
+            old.reviewIdentity != identities -> pageReview.map { it.copy(releaseDate = it.releaseDate.ifBlank { AniDbReleaseDate.normalize(today) }) }
             preserveSaved -> pageReview.map { page -> old.review.find { it.index == page.index } ?: page }
             else -> pageReview.map { page ->
                 val local = old.review.find { it.index == page.index } ?: return@map page

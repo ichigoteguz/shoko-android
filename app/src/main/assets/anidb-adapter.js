@@ -1,8 +1,14 @@
-/* Shoko Remote form adapter v1. This script never submits forms or clicks Next/Add Files. */
+/* Shoko Remote form adapter v2. Actions run only after explicit native Next/Add Files taps. */
 (function () {
   'use strict';
   if (window.__shokoAniDbV1) return;
-  const VERSION = 1;
+  const VERSION = 2;
+  let pendingAction = '';
+  let submitAttempted = false;
+  let actionErrorBaseline = '';
+  let actionErrorRevision = 0;
+  let errorRevision = 0;
+  const messageSelector = '.g_msg, .g_bubble, #addfilem_error, #addfilem_errors, #addfilem_result, #layout-content .error, #addfilem_form .error, [role="alert"]';
   const byId = id => document.getElementById(id);
   const text = element => element ? (element.textContent || '').trim().replace(/\s+/g, ' ') : '';
   const isAllowedOrigin = () => location.protocol === 'https:' && location.hostname === 'anidb.net' && (!location.port || location.port === '443');
@@ -76,17 +82,36 @@
     }).reduce((all, rows) => all.concat(rows), []);
   }
 
+  function messages() {
+    // Dedicated site messages only: body text or a filename cannot establish success.
+    const nodes = Array.from(document.querySelectorAll(messageSelector));
+    const visible = nodes.filter(node => !isHidden(node)).map(text).filter(Boolean);
+    const success = visible.find(value => /(?:\bfiles?\b.{0,80}\b(?:successfully added|added successfully)\b|\bsuccessfully added\b.{0,80}\bfiles?\b)/i.test(value)) || '';
+    const errors = nodes.filter(node => !isHidden(node) && (node.matches('.error, .error_msg, .g_error, #addfilem_error, #addfilem_errors') || /(?:\berror\b|\binvalid\b|\bfailed\b|\bcould not\b|\bmust (?:be|select|enter|specify)\b|\balready (?:exists|added)\b)/i.test(text(node)))).map(text).filter(Boolean);
+    return { success, error: [...new Set(errors)].join('\n') };
+  }
+
   function snapshot() {
-    const result = { status: 'page', adapterVersion: VERSION, url: location.href, title: document.title || '', fields: [], rows: [], unsupported: [], audioTracks: 0, subtitleTracks: 0, message: '' };
+    const result = { status: 'page', adapterVersion: VERSION, url: location.href, title: document.title || '', fields: [], rows: [], unsupported: [], audioTracks: 0, subtitleTracks: 0, message: '', errorMessage: '', errorRevision, dateFormat: 'dd.MM.yyyy' };
     if (!isAllowedOrigin()) return { ...result, status: 'unsupported', message: 'Only the official HTTPS AniDB page can be edited.' };
+    const feedback = messages();
+    result.errorMessage = feedback.error;
+    if (feedback.success && !feedback.error) {
+      pendingAction = '';
+      return { ...result, status: 'success', message: feedback.success };
+    }
+    if (feedback.error && (feedback.error !== actionErrorBaseline || errorRevision !== actionErrorRevision)) { pendingAction = ''; submitAttempted = false; }
     const form = byId('addfilem_form');
     if (!form) {
       if (document.querySelector('input[type="password"]')) result.status = 'login';
       else if (document.querySelector('#challenge-form, #cf-challenge-running, .cf-turnstile') || /just a moment|verify you are human|checking your browser/i.test(document.title)) result.status = 'challenge';
+      if (feedback.error) return { ...result, status: 'error', message: feedback.error };
       result.message = result.status === 'login' ? 'Sign in on the official AniDB page. Your password stays in this WebView.' : result.status === 'challenge' ? 'AniDB is asking for a browser check. Complete it on the official page.' : 'Read the result on the official AniDB page. Navigation alone does not confirm that files were added.';
       return result;
     }
     result.status = byId('addfilem_output') ? 'review' : 'form';
+    if (pendingAction === 'next' && result.status === 'review') pendingAction = '';
+    if (!/^\/anime\/\d+\/release\/add\/?$/.test(location.pathname)) result.unsupported.push('Not an anime Mass Add page.');
     const required = ['addfilem_group', 'addfilem_group_input', 'addfilem_search', 'addfilem_template', 'addf_crcstatus', 'addfilem_quality', 'addfilem_type',
       'addstrm_vid_flag_FLAG_3DVIDEO', 'addstrm_vid_flag_FLAG_CLEAN', 'addstrm_vid_flag_FLAG_CREDITLESS', 'addstrm_vid_flag_FLAG_WRONGAR'];
     required.push(result.status === 'review' ? 'addfilem_add_files' : 'addfilem_ed2k');
@@ -109,7 +134,7 @@
     result.subtitleTracks = trackIndices('sub').length;
     try { result.rows = reviewRows(); } catch (error) { result.unsupported.push(error.message); }
     if (result.unsupported.length) result.status = 'unsupported';
-    result.message = result.status === 'unsupported' ? 'The AniDB form has changed. Use the official page so no options are lost.' : result.status === 'review' ? 'Review each file. The final Add Files button is operated only by you on AniDB.' : 'Native controls use the current AniDB form choices and defaults.';
+    result.message = result.status === 'unsupported' ? 'The AniDB form has changed. Use the official page so no options are lost.' : result.status === 'review' ? 'Confirm episode, version and release date, then tap Add Files.' : 'Native controls use the current AniDB form choices and defaults.';
     return result;
   }
 
@@ -212,6 +237,44 @@
     });
   }
 
-  // Deliberately no generic method, Next method, submit method, or native bridge.
-  window.__shokoAniDbV1 = Object.freeze({ snapshot, apply, applyReview, searchGroups });
+  function activate(kind) {
+    let attempted = false;
+    const result = run(() => {
+      const current = snapshot();
+      if (pendingAction || (kind === 'submitFiles' && submitAttempted)) throw new Error('This action was already requested. Read AniDB’s result before trying again.');
+      if (current.status !== (kind === 'next' ? 'form' : 'review')) throw new Error('AniDB is not at the expected step.');
+      const form = byId('addfilem_form');
+      const control = byId(kind === 'next' ? 'addfilem_next' : 'addfilem_add_files');
+      if (!control || !form.contains(control) || !['BUTTON', 'INPUT'].includes(control.tagName) || !['button', 'submit'].includes(control.type) || control.disabled || control.getAttribute('aria-disabled') === 'true') throw new Error('AniDB’s action control has changed or is disabled. Use its official page.');
+      const target = new URL(control.getAttribute('formaction') || form.action || location.href, location.href);
+      if (target.origin !== location.origin || control.form !== form) throw new Error('AniDB’s action leaves the current form.');
+      if (!form.checkValidity()) {
+        const invalid = Array.from(form.elements).find(element => element.validity && !element.validity.valid);
+        throw new Error(invalid && invalid.validationMessage || 'Check AniDB’s required fields.');
+      }
+      pendingAction = kind;
+      actionErrorBaseline = current.errorMessage;
+      actionErrorRevision = current.errorRevision;
+      if (kind === 'submitFiles') submitAttempted = true;
+      // Retain the official handlers, hidden fields, validation and submitter values.
+      attempted = true;
+      control.click();
+    });
+    return { ...result, attempted };
+  }
+
+  function touchesMessage(node, descendants = true) {
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    return !!element && (!!element.closest(messageSelector) || descendants && !!element.querySelector(messageSelector));
+  }
+  // Constant-size response revision: same-text validation messages can be re-rendered
+  // for a new request. No DOM content is sent through a JavaScript/native bridge.
+  const errorObserver = new MutationObserver(records => {
+    if (records.some(record => touchesMessage(record.target, false) || [...record.addedNodes, ...record.removedNodes].some(node => touchesMessage(node)))) errorRevision = (errorRevision + 1) % 2147483647;
+  });
+  errorObserver.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'hidden', 'style'] });
+
+  // No generic evaluator or native JavaScript bridge is exposed.
+  window.__shokoAniDbV1 = Object.freeze({ snapshot, apply, applyReview, searchGroups,
+    next: () => activate('next'), submitFiles: () => activate('submitFiles') });
 })();

@@ -2,9 +2,9 @@
 
 A native Android client for Shoko Server, starting with **unrecognized files → AVDump → AniDB Mass Add → recognition checks**.
 
-Developed with **OpenAI Codex**, in collaboration with ichigoteguz. The same credit is available in the app's **About Shoko Remote** dialog (the info button in the top bar).
+Developed with OpenAI Codex, in collaboration with ichigoteguz. The same credit is available in the app's **About Shoko Remote** dialog (the info button in the top bar).
 
-**Stable release: [Shoko Remote 0.1.4](https://github.com/ichigoteguz/shoko-android/releases/tag/v0.1.4)**. This adds the About dialog and development credit to the owner-confirmed 0.1.3 workflow. Download `Shoko-Remote-0.1.4.apk` from the release and install it over your existing copy to keep your connection and drafts. See [release notes](docs/releases/v0.1.4.md) for validation and remaining compatibility checks. Full WebUI parity remains on the [roadmap](docs/FEATURES.md).
+**Latest release: [Shoko Remote 0.1.7](https://github.com/ichigoteguz/shoko-android/releases/tag/v0.1.7)**. This adds automatic refreshes and batch resets, separate AVDump/AniDB selections, native Next/Add Files, corrected release dates (`dd.mm.yyyy`), and a bottom navigation highlight that follows the displayed page. Download `Shoko-Remote-0.1.7.apk` and install it over your existing copy to keep the connection and drafts. See [release notes](docs/releases/v0.1.7.md) and [verification notes](docs/VERIFICATION.md). Full WebUI parity remains on the [roadmap](docs/FEATURES.md).
 
 The app uses the WebUI's **Shoko Gray** theme: its blue accent, gray panels, dark inputs, Sora typography, and 8dp corners. It keeps that appearance in both Android system modes. Server-provided custom CSS overrides are not imported into the native theme.
 
@@ -21,24 +21,25 @@ The everyday editor puts group, template, CRC/hash status, quality, source, and 
 ## Use the app
 
 1. Install the APK, open **Shoko Remote**, and enter the full server address, such as `http://192.168.1.10:8111`. Sign in with your Shoko username and password.
-2. In **Files**, search and select a release. Continue to **AVDump**.
+2. In **Files**, select an AVDump pool. It can contain files from several anime. Continue to **AVDump**. Files refreshes whenever you return to it or resume the app there.
 3. Run AVDump for intact, publicly released, unmodified files. The work runs on your server; you can leave the app and return. Previously dumped files can skip this step.
-4. Continue to **AniDB**. The search box fills with the anime title inferred from your selected files, and results load automatically. Check or edit the suggested title, or enter an AniDB ID. Your manual edits are kept when you return to the screen.
-5. Sign in on the official AniDB page inside the app. Tap **Use app editor** to load the current native controls.
+4. On **AVDump**, check the files for one anime and tap **Choose files for AniDB**. Only that subset needs a completed dump. The anime search suggestion and ED2K links use that subset.
+5. Select the anime. The app loads AniDB in the background and opens its native editor automatically. If sign-in or browser verification is needed, complete it on the official page; the app returns to the editor when the form is ready.
 6. Choose the release group/template, CRC status, quality/source, and check the filled ED2K links. Use **Advanced** for track and video options.
-7. Tap **Continue on AniDB**, then the website's **Next** button. Tap **Use app editor** again for mobile episode/version/release-date editing.
-8. Tap **Review on AniDB**, check the populated official review, and press **Add Files** yourself.
-9. Tap **I submitted · check Shoko**. This records your report and queues recognition checks. It does not claim AniDB accepted the contribution; actual recognition is shown separately.
+7. Tap **Next** in the app. The lower section changes to per-file EPNO, version and release-date controls, retaining AniDB's episode/version detection. Blank dates initially default to today's local date (`dd.mm.yyyy`); each date remains editable.
+8. Tap **Add Files** to submit through AniDB's official control. The app displays explicit success or error messages when recognized. **Review on AniDB** remains available for optional manual review.
+9. Tap **I submitted · check Shoko** to return to refreshed AVDump status. That subset becomes a pending group, so you can choose the next anime while Shoko checks recognition. Pending files cannot be selected again. Recheck individual pending groups manually if necessary.
+10. Once every file in the pool is recognized by Shoko, the app starts a new batch and returns to a refreshed Files page with its search cleared.
 
-If AniDB asks for sign-in or a browser check, complete it on its official page. If the form changes or a value cannot be transferred, the app preserves your draft and shows the problem. It never silently removes unknown options or automatically presses the final Add Files button.
+If AniDB asks for sign-in or a browser check, complete it on its official page. If the form changes or a value cannot be transferred, the app preserves your draft and shows the problem. It never silently removes unknown options. Next and Add Files run only after the corresponding user action; interrupted submissions are never automatically retried.
 
-**Submission integration status:** the live AniDB form and native editor have been verified on the connected phone. Native-to-form transfer is covered by local form tests and a real Android WebView test. AniDB's acceptance of a complete contribution and this assisted workflow still need user-operated live validation; do not infer acceptance from the use of the official form. No private endpoint or raw create-file POST is implemented. The official **Next** action is user-operated because its current live implementation could not be audited in this environment.
+**Submission integration status:** the owner reported a successful live submission and subsequent Shoko recognition on the installed update. Native Next/Add Files and result handling also passed JavaScript and physical-device WebView fixture tests. Browser verification prevented independent inspection of the current signed-in page during development; automated tests use fixtures. No private endpoint or raw create-file POST is implemented. The app treats only explicit AniDB result messages as acceptance and tracks Shoko recognition separately.
 
 ## Drafts and templates
 
 Drafts, selected files, and activity are stored in Room on the phone. Custom templates support add, edit, delete, default selection, and reset. They retain release/track options; anime, group, and file links belong to the current batch. Desktop browser cookie templates do not automatically transfer.
 
-Use **New batch** to clear the current file selection and draft. Changing anime keeps the selected files and links while clearing anime-specific form data.
+Use **New batch** to clear the pool, pending groups and draft. **Change selected files** discards just the active AniDB draft and subset, preserving the pool and dump results. Changing anime keeps the subset and links while clearing anime-specific form data. Older workspaces restore their AniDB subset from matching draft links, or their previous selection when no links exist.
 
 ## Build
 

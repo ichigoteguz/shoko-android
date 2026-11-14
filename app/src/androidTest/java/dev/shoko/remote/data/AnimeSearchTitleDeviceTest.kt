@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -63,7 +64,7 @@ class AnimeSearchTitleDeviceTest {
               ],
               "draft": {
                 "animeId": 0,
-                "values": {"addfilem_ed2k": "saved draft text"},
+                "values": {"addfilem_ed2k": "ed2k://|file|saved-name.mkv|2000|FEDCBA9876543210FEDCBA9876543210|/"},
                 "dirty": true
               },
               "history": [{"time": 1, "message": "Saved batch"}]
@@ -72,9 +73,21 @@ class AnimeSearchTitleDeviceTest {
         )
         assertNull(restored.animeSearchQuery)
 
-        val prepared = restored.prepareAnimeSearch()
+        val prepared = restored.recoverSelection().prepareAnimeSearch()
 
-        assertEquals(restored.copy(animeSearchQuery = "Sousou no Frieren"), prepared)
+        assertEquals(restored.copy(animeSearchQuery = "Sousou no Frieren", anidbSelection = listOf(43)), prepared)
         assertEquals(prepared, prepared.prepareAnimeSearch())
+    }
+
+    @Test
+    fun malformedSavedLinksCannotSelectTheEntirePool() {
+        val restored = Workspace(selected = listOf(SelectedFile(42, "[Group] Anime - 01.mkv", 1000,
+            "0123456789ABCDEF0123456789ABCDEF", status = "Dumped")),
+            draft = Draft(values = mapOf("addfilem_ed2k" to "saved draft text"), dirty = true), page = "add")
+        val recovered = restored.recoverSelection().prepareAnimeSearch()
+        assertTrue(recovered.anidbFiles.isEmpty())
+        assertEquals("", recovered.animeSearchQuery)
+        assertEquals(restored.draft, recovered.draft)
+        assertEquals(restored.selected, recovered.selected)
     }
 }

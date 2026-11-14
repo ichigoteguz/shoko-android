@@ -31,13 +31,18 @@ data class AniDbReviewRow(
 @Serializable
 data class AniDbFormSnapshot(
     val status: String = "page",
-    val adapterVersion: Int = 1,
+    val adapterVersion: Int = 2,
+    val animeId: Int = 0,
     val url: String = "",
     val title: String = "",
     val fields: List<AniDbField> = emptyList(),
     val rows: List<AniDbReviewRow> = emptyList(),
     val unsupported: List<String> = emptyList(),
     val message: String = "Sign in to AniDB, then open an anime's Mass Add page.",
+    val errorMessage: String = "",
+    val errorRevision: Int = 0,
+    val submissionRejected: Boolean = false,
+    val dateFormat: String = "dd.MM.yyyy",
     val audioTracks: Int = 0,
     val subtitleTracks: Int = 0,
 )
@@ -63,6 +68,7 @@ data class AniDbBrowserDialog(val message: String, val kind: String, val default
 @Serializable
 internal data class AniDbAdapterResult(
     val ok: Boolean = false,
+    val attempted: Boolean = false,
     val error: String = "",
     val snapshot: AniDbFormSnapshot? = null,
 )
